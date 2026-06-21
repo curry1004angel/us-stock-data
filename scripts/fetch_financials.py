@@ -13,8 +13,14 @@ DATA = Path("data")
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 
-USER_AGENT = os.environ.get("SEC_USER_AGENT", "trend-template-us soso9717@naver.com")
-HEADERS = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
+# 시크릿 미등록 시 환경변수가 빈 문자열("")로 들어올 수 있어, or로 기본값을 보장한다.
+# (빈 User-Agent는 SEC가 "Undeclared Automated Tool"로 403 차단한다.)
+USER_AGENT = (os.environ.get("SEC_USER_AGENT") or "").strip() or "trend-template-us soso9717@naver.com"
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Encoding": "gzip, deflate",
+    "Accept": "application/json, text/plain, */*",
+}
 
 # 매출은 회계기준 변경(ASC606) 등으로 태그가 여러 개라 우선순위대로 폴백한다.
 CONCEPTS = {
@@ -32,11 +38,16 @@ FP_TO_Q = {"Q1": "1Q", "Q2": "2Q", "Q3": "3Q"}
 
 
 def get_cik_map():
-    resp = requests.get(TICKERS_URL, headers=HEADERS, timeout=60)
+    print(f"  사용 User-Agent: '{USER_AGENT}'")  # 빈 값이면 시크릿 미등록 신호
+    for attempt in range(4):
+        resp = requests.get(TICKERS_URL, headers=HEADERS, timeout=60)
+        if resp.status_code == 200:
+            data = resp.json()
+            # {idx: {cik_str, ticker, title}} 구조 → {티커: CIK}
+            return {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
+        print(f"  company_tickers.json {resp.status_code} 응답 (시도 {attempt + 1}/4)")
+        time.sleep(3)
     resp.raise_for_status()
-    data = resp.json()
-    # {idx: {cik_str, ticker, title}} 구조 → {티커: CIK}
-    return {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
 
 
 def fetch_company_facts(cik):
