@@ -1,0 +1,41 @@
+name: 월간 수정주가 재동기화
+
+# fdr(야후)은 분할이 일어나면 과거 OHLC를 소급해 분할조정하지만, 우리가 일별로 저장한
+# 과거 가격은 수집 시점 기준으로 박제되어 있다. 분할 후 신규 가격만 받으면 과거와 단차가
+# 생기므로(예: 10:1 분할 시 과거가 10배), 월 1회 최근 3년치를 다시 받아 덮어써
+# (backfill의 drop_duplicates keep=last) 이 왜곡을 바로잡고 스크리닝도 재계산한다.
+
+on:
+  schedule:
+    # 매월 1일 UTC 04:00
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+
+jobs:
+  resync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 최근 3년 수정주가 재동기화
+        run: python scripts/backfill.py $(( $(date +%Y) - 2 )) $(date +%Y)
+
+      - name: 트렌드 템플릿 재계산
+        run: python scripts/trend_template.py
+
+      - name: 변경사항 커밋 및 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/prices/ data/screener/
+          git diff --staged --quiet || git commit -m "월간 수정주가 재동기화: $(date -u +%Y%m)"
+          git pull --rebase
+          git push

@@ -1,0 +1,59 @@
+name: 과거 데이터 백필
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_year:
+        description: '시작 연도 (예: 2021)'
+        required: true
+        default: '2021'
+      end_year:
+        description: '종료 연도 (예: 2026)'
+        required: true
+        default: '2026'
+      skip_financials:
+        description: '재무 수집 건너뜀'
+        type: boolean
+        default: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 종목 목록 생성
+        run: python scripts/update_stock_list.py
+
+      - name: 가격 백필
+        run: python scripts/backfill.py ${{ github.event.inputs.start_year }} ${{ github.event.inputs.end_year }}
+
+      - name: 재무 수집 (SEC EDGAR)
+        if: ${{ github.event.inputs.skip_financials != 'true' }}
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python scripts/fetch_financials.py
+
+      - name: QoQ/YoY 계산
+        if: ${{ github.event.inputs.skip_financials != 'true' }}
+        run: python scripts/calculate_changes.py
+
+      - name: 트렌드 템플릿 스크리닝
+        run: python scripts/trend_template.py
+
+      - name: 변경사항 커밋 및 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "백필: ${{ github.event.inputs.start_year }}-${{ github.event.inputs.end_year }}"
+          git pull --rebase
+          git push
