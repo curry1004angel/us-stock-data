@@ -21,20 +21,30 @@ data/
 | 워크플로 | 일정 | 하는 일 |
 |---|---|---|
 | `daily_prices.yml` | 평일 UTC 23:00 | 당일 주가 수집 + 트렌드 템플릿 재계산 |
-| `financials.yml` | 토 UTC 02:00 | SEC EDGAR 재무 수집 + QoQ/YoY 계산 |
+| `financials.yml` | 토 UTC 02:00 | yfinance 재무 수집(최근 분기) + QoQ/YoY 계산 |
 | `monthly_stock_list.yml` | 매월 1일 | 종목 목록 갱신 |
 | `monthly_resync.yml` | 매월 1일 | 최근 3년 주가 재동기화(분할 박제 보정) |
 | `backfill.yml` | 수동 | 과거 가격 백필 + 재무 + 스크리닝 (최초 1회) |
 
+## 재무 데이터 전략 (하이브리드)
+
+SEC EDGAR가 자동화·CI IP를 모두 403 차단(Akamai)해 직접 자동 수집이 불가능하다. 그래서.
+
+- **최근 분기 (~5개)** — `fetch_financials.py`가 **yfinance(야후)** 로 자동 수집. CI에서 막히지 않는다.
+- **과거 이력 (고정)** — `seed_financials_from_sec.py`로 **SEC 벌크를 한 번만** 보강한다.
+  과거 실적은 변하지 않으므로 시드는 1회면 충분하고, 이후 새 분기는 yfinance가 덧붙인다.
+  - yfinance만으로는 분기 이력이 ~5개뿐이라 영업이익 YoY가 최근 1분기만 계산돼
+    '3종 연속 가속(streak)'을 판정하기 어렵다. 시드로 과거를 채우면 streak이 살아난다.
+
 ## 최초 설정
 
-1. **SEC User-Agent 시크릿 등록** — Settings → Secrets and variables → Actions →
-   New repository secret. 이름 `SEC_USER_AGENT`, 값은 연락 가능한 이메일을 포함한 문자열
-   (예: `trend-template-us soso9717@naver.com`). SEC EDGAR는 인증키는 없지만 User-Agent에
-   이메일을 요구한다. 미설정 시 스크립트의 기본값으로 동작하지만 명시 권장.
-2. **백필 실행** — Actions → `과거 데이터 백필` → Run workflow.
-   기본값 `2021~2026`이면 가격 백필(수천 종목, 1~3시간) + SEC 재무 + 스크리닝까지 한 번에 수행한다.
-3. 백필 완료 후에는 위 정기 워크플로들이 자동으로 최신 상태를 유지한다.
+1. **백필 실행** — Actions → `과거 데이터 백필` → Run workflow.
+   기본값 `2021~2026`이면 가격 백필(수천 종목, 1~3시간) + yfinance 재무 + 스크리닝까지 수행한다.
+2. **(선택) SEC 과거 시드** — 분기 streak 판정을 깊게 하려면 한 번만.
+   - 브라우저로 `https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip`(~1.5GB)을 받는다.
+   - 로컬에서 `python scripts/seed_financials_from_sec.py <받은 zip 경로>` 실행.
+   - 이어서 `python scripts/calculate_changes.py` 실행 후 `data/financials/` 를 커밋·푸시한다.
+3. 이후 정기 워크플로들이 자동으로 최신 상태를 유지한다(시드 재실행 불필요).
 
 ## 분할·수정주가 메모
 

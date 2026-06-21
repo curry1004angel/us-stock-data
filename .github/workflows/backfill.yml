@@ -36,10 +36,8 @@ jobs:
       - name: 가격 백필
         run: python scripts/backfill.py ${{ github.event.inputs.start_year }} ${{ github.event.inputs.end_year }}
 
-      - name: 재무 수집 (SEC EDGAR)
+      - name: 재무 수집 (yfinance)
         if: ${{ github.event.inputs.skip_financials != 'true' }}
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: python scripts/fetch_financials.py
 
       - name: QoQ/YoY 계산

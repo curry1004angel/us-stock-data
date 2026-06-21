@@ -12,7 +12,9 @@ def pct_change(current, previous):
     return round((current - previous) / abs(previous) * 100, 2)
 
 
-def generate_q4():
+def fill_missing_q4():
+    # 야후는 실제 4Q 값을 주므로 보존하고, 4Q가 없는 연도만 연간−(1Q+2Q+3Q)로 채운다.
+    # (SEC 시드로 받은 과거 연도는 10-Q에 4Q 단독 3개월 값이 없어 이렇게 보강한다.)
     path_q = Path("data/financials/quarterly.parquet")
     path_a = Path("data/financials/annual.parquet")
     if not path_q.exists() or not path_a.exists():
@@ -21,27 +23,27 @@ def generate_q4():
     q = pd.read_parquet(path_q)
     a = pd.read_parquet(path_a)
 
-    # 기존 4Q 행 제거 후 재생성
-    q = q[q["quarter"] != "4Q"].copy()
-
-    q123_sum = (
-        q.groupby(["ticker", "year", "account"])["amount"]
-        .sum()
-        .reset_index()
-        .rename(columns={"amount": "q123_sum"})
-    )
-    merged = a[["ticker", "year", "account", "amount"]].merge(
-        q123_sum, on=["ticker", "year", "account"], how="inner"
-    )
-    merged["amount"] = merged["amount"] - merged["q123_sum"]
-    merged["quarter"] = "4Q"
-    merged = merged.drop(columns=["q123_sum"])
-
-    combined = pd.concat([q, merged[["ticker", "year", "quarter", "account", "amount"]]], ignore_index=True)
+    have_q4 = set(map(tuple, q[q["quarter"] == "4Q"][["ticker", "year", "account"]].values))
+    q123 = q[q["quarter"].isin(["1Q", "2Q", "3Q"])]
+    # 1~3분기가 모두 있는 (종목·연도·계정)만 4Q 도출 대상
+    full = (q123.groupby(["ticker", "year", "account"])["quarter"].nunique()
+            .reset_index().query("quarter == 3")[["ticker", "year", "account"]])
+    q123_sum = (q123.groupby(["ticker", "year", "account"])["amount"].sum()
+                .reset_index().rename(columns={"amount": "q123_sum"}))
+    cand = (a[["ticker", "year", "account", "amount"]]
+            .merge(full, on=["ticker", "year", "account"])
+            .merge(q123_sum, on=["ticker", "year", "account"]))
+    cand["key"] = list(zip(cand["ticker"], cand["year"], cand["account"]))
+    cand = cand[~cand["key"].isin(have_q4)]
+    if cand.empty:
+        print("보강할 4Q 없음")
+        return
+    cand["amount"] = (cand["amount"] - cand["q123_sum"]).astype("int64")
+    cand["quarter"] = "4Q"
+    combined = pd.concat([q, cand[["ticker", "year", "quarter", "account", "amount"]]], ignore_index=True)
     combined.sort_values(["ticker", "year", "quarter", "account"]).reset_index(drop=True).to_parquet(
-        path_q, index=False, compression="snappy"
-    )
-    print(f"4Q 생성 완료: {len(merged)}행 추가 → 총 {len(combined)}행")
+        path_q, index=False, compression="snappy")
+    print(f"4Q 보강: {len(cand)}행 추가 → 총 {len(combined)}행")
 
 
 def process_quarterly():
@@ -84,6 +86,6 @@ def process_annual():
 
 
 if __name__ == "__main__":
-    generate_q4()
+    fill_missing_q4()
     process_quarterly()
     process_annual()

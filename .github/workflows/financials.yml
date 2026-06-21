@@ -2,7 +2,7 @@ name: 재무 데이터 수집 및 변화율 계산
 
 on:
   schedule:
-    # 매주 토요일 UTC 02:00 (companyfacts는 전체 과거를 한 번에 반환)
+    # 매주 토요일 UTC 02:00 (yfinance로 최근 분기 갱신)
     - cron: '0 2 * * 6'
   workflow_dispatch:
 
@@ -20,9 +20,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: 재무제표 수집 (SEC EDGAR)
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      - name: 재무제표 수집 (yfinance)
         run: python scripts/fetch_financials.py
 
       - name: QoQ/YoY 계산
