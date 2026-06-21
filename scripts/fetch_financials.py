@@ -3,6 +3,7 @@
 # SEC는 인증키 없이 무료지만 User-Agent에 연락 가능한 이메일을 요구한다(GitHub Secret SEC_USER_AGENT).
 # companyfacts는 한 종목의 전체 과거 재무를 한 번에 돌려주므로 백필과 정기 갱신을 겸한다.
 import os
+import json
 import time
 import requests
 import pandas as pd
@@ -11,6 +12,7 @@ from datetime import datetime
 
 DATA = Path("data")
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+LOCAL_TICKERS = DATA / "company_tickers.json"   # www.sec.gov가 CI IP를 막으므로 레포에 박아둔 사본 우선
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 
 # 시크릿 미등록 시 환경변수가 빈 문자열("")로 들어올 수 있어, or로 기본값을 보장한다.
@@ -38,16 +40,24 @@ FP_TO_Q = {"Q1": "1Q", "Q2": "2Q", "Q3": "3Q"}
 
 
 def get_cik_map():
-    print(f"  사용 User-Agent: '{USER_AGENT}'")  # 빈 값이면 시크릿 미등록 신호
+    # 레포에 박아둔 사본을 우선 사용한다(www.sec.gov는 GitHub Actions IP를 403으로 막음).
+    if LOCAL_TICKERS.exists():
+        print("  로컬 company_tickers.json 사용")
+        data = json.loads(LOCAL_TICKERS.read_text(encoding="utf-8"))
+        return {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
+
+    print(f"  로컬 파일 없음 → www.sec.gov 시도 (User-Agent: '{USER_AGENT}')")
     for attempt in range(4):
         resp = requests.get(TICKERS_URL, headers=HEADERS, timeout=60)
         if resp.status_code == 200:
             data = resp.json()
-            # {idx: {cik_str, ticker, title}} 구조 → {티커: CIK}
             return {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
         print(f"  company_tickers.json {resp.status_code} 응답 (시도 {attempt + 1}/4)")
         time.sleep(3)
-    resp.raise_for_status()
+    raise RuntimeError(
+        "company_tickers.json을 받지 못했습니다(www.sec.gov가 CI IP를 차단). "
+        "브라우저로 받아 data/company_tickers.json 으로 커밋하세요."
+    )
 
 
 def fetch_company_facts(cik):
@@ -111,6 +121,16 @@ def update_parquet(path, new_df, key_cols):
 
 
 def main():
+    # data.sec.gov(companyfacts API) 접근 가능 여부를 먼저 진단한다.
+    # www.sec.gov(웹사이트)와 달리 이 API 호스트는 보통 CI에서도 열려 있다.
+    probe = requests.get(FACTS_URL.format(cik=320193), headers=HEADERS, timeout=30)
+    print(f"data.sec.gov 접근 테스트(AAPL companyfacts): HTTP {probe.status_code}")
+    if probe.status_code != 200:
+        raise RuntimeError(
+            f"data.sec.gov가 {probe.status_code}로 응답합니다. SEC API 호스트까지 차단된 상태이므로 "
+            "GitHub Actions에서 SEC 재무 수집이 불가능합니다(대체 소스 필요)."
+        )
+
     print("CIK 매핑 로드 중...")
     cik_map = get_cik_map()
     print(f"  SEC 등록 종목 {len(cik_map)}개")
