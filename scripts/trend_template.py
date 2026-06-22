@@ -89,6 +89,9 @@ def main():
     has_rs_line = bench is not None
     if has_rs_line:
         df = df.merge(bench, on="date", how="left")
+        # S&P500 지수는 fdr에서 개별 종목 가격보다 하루 늦게 갱신될 때가 있다. 그러면 최신 거래일의
+        # bench가 비어 최신 행 rs_line이 NaN→rs_line_up이 전부 False로 깔린다. 직전일 지수로 채운다.
+        df["bench"] = df.groupby("ticker", sort=False)["bench"].ffill()
         df["rs_line"] = df["close"] / df["bench"]
         df["rs_line_30"] = df.groupby("ticker", sort=False)["rs_line"].shift(30)
         df["rs_line_65"] = df.groupby("ticker", sort=False)["rs_line"].shift(65)
