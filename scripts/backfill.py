@@ -22,7 +22,8 @@ def main():
     for i, (_, row) in enumerate(stock_list.iterrows(), 1):
         ticker, market = row["ticker"], row["market"]
         try:
-            df = fdr.DataReader(ticker, start, end)
+            # 야후는 복수클래스 보통주에 점이 아닌 대시를 쓴다(BRK.B→BRK-B). 저장은 원본 티커로.
+            df = fdr.DataReader(ticker.replace(".", "-"), start, end)
             if df.empty:
                 continue
             df = df.reset_index()

@@ -69,7 +69,8 @@ def main():
     ok = 0
     for i, tk in enumerate(tickers, 1):
         try:
-            t = yf.Ticker(tk)
+            # 야후는 복수클래스 보통주에 점이 아닌 대시를 쓴다(BRK.B→BRK-B). 저장은 원본 티커로.
+            t = yf.Ticker(tk.replace(".", "-"))
             qr = extract(t.quarterly_income_stmt, tk, True)
             ar = extract(t.income_stmt, tk, False)
             if qr or ar:
