@@ -50,6 +50,9 @@ jobs:
       - name: 트렌드 템플릿 스크리닝
         run: python scripts/trend_template.py
 
+      - name: 추정 베이스 계산
+        run: python scripts/compute_bases.py
+
       - name: 변경사항 커밋 및 푸시
         run: |
           git config user.name "github-actions[bot]"
