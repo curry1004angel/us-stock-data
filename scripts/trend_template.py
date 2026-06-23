@@ -136,8 +136,9 @@ def main():
     latest["pct_below_high"] = ((1 - latest["close"] / latest["high_52w"]) * 100).round(1)
 
     # 종목명 결합
+    # stock_list에 있는 보통주만 스크리닝 대상(가격 parquet에 남은 우선주·유닛 등 비보통주 제외).
     sl = pd.read_csv(DATA / "stock_list.csv", dtype=str, encoding="utf-8-sig")
-    latest = latest.merge(sl[["ticker", "name"]], on="ticker", how="left")
+    latest = latest.merge(sl[["ticker", "name"]], on="ticker", how="inner")
 
     for col in ("ma50", "ma150", "ma200", "low_52w", "high_52w"):
         latest[col] = latest[col].round(2)
