@@ -7,6 +7,11 @@ import pandas as pd
 
 QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
 
+# 재무상태표 계정 — 잔액(시점) 값이라 "연간 = 4분기 합"이 성립하지 않으므로
+# 결산분기 투표·누락분 보강(연간−3분기합)에서 모두 제외한다.
+BS_ACCOUNTS = {"total_assets", "total_liabilities", "total_equity",
+               "current_assets", "current_liabilities"}
+
 
 def pct_change(current, previous):
     if previous is None or previous == 0 or pd.isna(previous):
@@ -35,15 +40,19 @@ def fill_missing_quarters():
     # 1) 결산 분기 투표: 연간 Y가 (Y,e)로 끝나는 연속 4분기 합과 맞으면 e에 한 표
     votes = {}
     for t, acct, y, amt in ann:
+        if acct in BS_ACCOUNTS:
+            continue
         for e in (1, 2, 3, 4):
             vals = [amounts.get((t, acct, y * 4 + e - k)) for k in range(4)]
             if all(v is not None for v in vals) and abs(sum(vals) - amt) <= max(abs(amt) * 0.02, 2e6):
                 votes.setdefault(t, Counter())[e] += 1
     fiscal_end = {t: c.most_common(1)[0][0] for t, c in votes.items()}
 
-    # 2) 확정 구성에서 4분기 중 3개만 있으면 누락분 = 연간 − 3분기 합
+    # 2) 확정 구성에서 4분기 중 3개만 있으면 누락분 = 연간 − 3분기 합 (BS 계정 제외)
     fills = []
     for t, acct, y, amt in ann:
+        if acct in BS_ACCOUNTS:
+            continue
         e = fiscal_end.get(t, 4)
         seqs = [y * 4 + e - k for k in range(4)]
         known = [amounts[(t, acct, s)] for s in seqs if (t, acct, s) in amounts]

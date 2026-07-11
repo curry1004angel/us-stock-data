@@ -17,6 +17,23 @@ ROW_MAP = {
     "net_income": ["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations"],
 }
 
+# 재무상태표 — 잔액(시점) 값. 은행 등은 유동/비유동 구분이 없어 current_*가 비는데 정상(NaN 처리).
+BS_ROW_MAP = {
+    "total_assets": ["Total Assets"],
+    "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liabilities"],
+    "total_equity": ["Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity"],
+    "current_assets": ["Current Assets", "Total Current Assets"],
+    "current_liabilities": ["Current Liabilities", "Total Current Liabilities"],
+}
+
+# 현금흐름표 — capex는 야후가 음수(지출)로 주므로 한국(DART 취득액 양수)과 맞춰 부호를 뒤집어 저장
+CF_ROW_MAP = {
+    "operating_cashflow": ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities",
+                           "Total Cash From Operating Activities"],
+    "capex": ["Capital Expenditure", "Capital Expenditures"],
+}
+NEGATE_ACCOUNTS = {"capex"}
+
 
 def pick_row(df, names):
     for n in names:
@@ -25,20 +42,21 @@ def pick_row(df, names):
     return None
 
 
-def extract(df, ticker, quarterly):
+def extract(df, ticker, quarterly, row_map=ROW_MAP):
     # quarterly=True면 분기(달력 분기 라벨), False면 연간. 종료일(컬럼)에서 연도·분기를 뽑는다.
     rows = []
     if df is None or df.empty:
         return rows
-    for account, names in ROW_MAP.items():
+    for account, names in row_map.items():
         r = pick_row(df, names)
         if r is None:
             continue
+        sign = -1 if account in NEGATE_ACCOUNTS else 1
         for col, val in df.loc[r].items():
             if pd.isna(val):
                 continue
             ts = pd.Timestamp(col)
-            row = {"ticker": ticker, "year": int(ts.year), "account": account, "amount": int(val)}
+            row = {"ticker": ticker, "year": int(ts.year), "account": account, "amount": sign * int(val)}
             if quarterly:
                 row["quarter"] = f"{(ts.month - 1) // 3 + 1}Q"
             rows.append(row)
@@ -73,6 +91,10 @@ def main():
             t = yf.Ticker(tk.replace(".", "-"))
             qr = extract(t.quarterly_income_stmt, tk, True)
             ar = extract(t.income_stmt, tk, False)
+            qr += extract(t.quarterly_balance_sheet, tk, True, BS_ROW_MAP)
+            ar += extract(t.balance_sheet, tk, False, BS_ROW_MAP)
+            qr += extract(t.quarterly_cashflow, tk, True, CF_ROW_MAP)
+            ar += extract(t.cashflow, tk, False, CF_ROW_MAP)
             if qr or ar:
                 ok += 1
             q_rows += qr
