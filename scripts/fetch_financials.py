@@ -56,7 +56,8 @@ def extract(df, ticker, quarterly, row_map=ROW_MAP):
             if pd.isna(val):
                 continue
             ts = pd.Timestamp(col)
-            row = {"ticker": ticker, "year": int(ts.year), "account": account, "amount": sign * int(val)}
+            # EPS는 소수(NVDA 4.93달러)라 int로 캐스팅하면 값이 파괴된다. 전 계정을 float로 통일한다.
+            row = {"ticker": ticker, "year": int(ts.year), "account": account, "amount": sign * float(val)}
             if quarterly:
                 row["quarter"] = f"{(ts.month - 1) // 3 + 1}Q"
             rows.append(row)
