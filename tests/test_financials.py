@@ -45,3 +45,8 @@ def test_NaN_값은_행을_만들지_않는다():
     df = make_stmt("Basic EPS", [4.93, float("nan")])
     rows = ff.extract(df, "NVDA", True, {"eps": ["Basic EPS"]})
     assert len(rows) == 1
+
+
+def test_ROW_MAP에_eps가_있다():
+    assert "eps" in ff.ROW_MAP
+    assert "Basic EPS" in ff.ROW_MAP["eps"]

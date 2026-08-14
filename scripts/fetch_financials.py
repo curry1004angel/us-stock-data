@@ -15,6 +15,8 @@ ROW_MAP = {
     "revenue": ["Total Revenue", "Operating Revenue"],
     "operating_profit": ["Operating Income", "Operating Income Or Loss"],
     "net_income": ["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations"],
+    # 주당순이익. 주식수로 나눠 계산하지 않고 공시값을 그대로 받는다 — 분할·우선주가 이미 반영돼 있다.
+    "eps": ["Basic EPS", "Basic Earnings Per Share"],
 }
 
 # 재무상태표 — 잔액(시점) 값. 은행 등은 유동/비유동 구분이 없어 current_*가 비는데 정상(NaN 처리).
