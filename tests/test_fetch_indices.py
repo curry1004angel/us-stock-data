@@ -21,8 +21,9 @@ def fdr_like():
 def test_날짜가_YYYYMMDD_문자열이_된다():
     out = fi.normalize(fdr_like())
     assert list(out["date"]) == ["20260812", "20260813"]
-    # pandas 3.0.3에서 dt.strftime은 StringDtype 또는 object를 반환할 수 있다
-    assert str(out["date"].dtype) in ("object", "string", "str")
+    # dtype 이름은 pandas 버전에 따라 object/str로 갈린다. 값의 실제 타입을 본다.
+    assert all(isinstance(v, str) for v in out["date"])
+    assert all(len(v) == 8 and v.isdigit() for v in out["date"])
 
 
 def test_컬럼이_소문자로_통일된다():
