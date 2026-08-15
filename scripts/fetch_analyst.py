@@ -45,6 +45,18 @@ HORIZONS = {"current": "current", "7d": "7daysAgo", "30d": "30daysAgo",
             "60d": "60daysAgo", "90d": "90daysAgo"}
 
 
+def pending_tickers(all_tickers, existing_df, max_age_days: int, today: str) -> list:
+    # 6132종목 × info 호출은 장시간 작업이라 중단 위험이 실재한다.
+    # 이미 최근에 받은 종목은 건너뛰어 재실행이 이어서 진행되게 한다.
+    # asof는 이 스크립트가 "%Y-%m-%d"로 저장한다. 파싱 실패(NaT)는 대상으로 남긴다.
+    if existing_df is None or len(existing_df) == 0:
+        return list(all_tickers)
+    cutoff = pd.Timestamp(today) - pd.Timedelta(days=max_age_days)
+    asof = pd.to_datetime(existing_df["asof"], format="%Y-%m-%d", errors="coerce")
+    fresh = set(existing_df.loc[asof >= cutoff, "ticker"])
+    return [t for t in all_tickers if t not in fresh]
+
+
 def yahoo_symbol(ticker: str, market: str = "") -> str:
     # 미국은 티커 그대로 쓴다. (한국 저장소 쪽 스크립트가 .KS/.KQ를 붙인다.)
     return str(ticker).strip()
@@ -191,14 +203,25 @@ def main():
     ap.add_argument("--all", action="store_true", help="stock_list.csv 전체")
     ap.add_argument("--limit", type=int, default=0, help="--all일 때 상위 N개만")
     ap.add_argument("--sleep", type=float, default=0.3, help="종목간 대기 초")
+    ap.add_argument("--max-age", type=int, default=30,
+                    help="--all일 때 이 일수 안에 받은 종목은 건너뛴다")
+    ap.add_argument("--save-every", type=int, default=25,
+                    help="N종목마다 중간 저장한다")
     args = ap.parse_args()
 
     lst = pd.read_csv(DATA / "stock_list.csv", dtype={"ticker": str})
     lst["ticker"] = lst["ticker"].astype(str).str.strip()
     if args.all:
         tickers = lst["ticker"].dropna().tolist()
+        existing = None
+        snap_path = OUT_DIR / "snapshot.parquet"
+        if snap_path.exists():
+            existing = pd.read_parquet(snap_path, columns=["ticker", "asof"])
+        tickers = pending_tickers(tickers, existing, args.max_age,
+                                  date.today().strftime("%Y-%m-%d"))
         if args.limit:
             tickers = tickers[:args.limit]
+        print(f"수집 대상 {len(tickers)}종목 (최근 {args.max_age}일 내 수집분은 제외)")
     else:
         tickers = [t.strip() for t in args.tickers]
     if not tickers:
@@ -222,15 +245,17 @@ def main():
             hists.append(hist)
         got = "O" if row.get("target_mean") is not None else "-"
         print(f"[{i}/{len(tickers)}] {tk} 컨센서스={got} 애널리스트={row.get('n_analysts')}")
+        if args.save_every and i % args.save_every == 0 and rows:
+            # 6000종목 순회 중 중단되면 전부 날아간다. 주기적으로 확정한다.
+            upsert(OUT_DIR / "snapshot.parquet", pd.DataFrame(rows), ["ticker"])
+            rows = []
         if args.sleep:
             time.sleep(args.sleep)
 
-    if not rows:
-        print("수집된 행이 없습니다.")
-        return
-    snap = pd.DataFrame(rows)
-    n = upsert(OUT_DIR / "snapshot.parquet", snap, ["ticker"])
-    print(f"[저장] {OUT_DIR/'snapshot.parquet'} (총 {n}종목)")
+    if rows:
+        snap = pd.DataFrame(rows)
+        n = upsert(OUT_DIR / "snapshot.parquet", snap, ["ticker"])
+        print(f"[저장] {OUT_DIR/'snapshot.parquet'} (총 {n}종목)")
     if hists:
         hh = pd.concat(hists, ignore_index=True)
         n2 = upsert(OUT_DIR / "earnings_history.parquet", hh, ["ticker", "date"])
