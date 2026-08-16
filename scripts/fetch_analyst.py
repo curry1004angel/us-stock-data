@@ -184,6 +184,18 @@ def fetch_one(symbol: str) -> tuple:
     return row, hist
 
 
+def history_rows(rows: list) -> list:
+    # 기관 보유 비중 이력 축적용으로 스냅샷 행에서 ticker·asof·held_pct_institutions 세 컬럼만 뽑는다.
+    return [
+        {
+            "ticker": r.get("ticker"),
+            "asof": r.get("asof"),
+            "held_pct_institutions": r.get("held_pct_institutions"),
+        }
+        for r in rows
+    ]
+
+
 def upsert(path: Path, new: pd.DataFrame, keys: list):
     # 기존 파일이 있으면 같은 키의 행을 새 값으로 갈아끼운다.
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,6 +260,7 @@ def main():
         if args.save_every and i % args.save_every == 0 and rows:
             # 6000종목 순회 중 중단되면 전부 날아간다. 주기적으로 확정한다.
             upsert(OUT_DIR / "snapshot.parquet", pd.DataFrame(rows), ["ticker"])
+            upsert(OUT_DIR / "institution_history.parquet", pd.DataFrame(history_rows(rows)), ["ticker", "asof"])
             rows = []
         if args.sleep:
             time.sleep(args.sleep)
@@ -256,6 +269,8 @@ def main():
         snap = pd.DataFrame(rows)
         n = upsert(OUT_DIR / "snapshot.parquet", snap, ["ticker"])
         print(f"[저장] {OUT_DIR/'snapshot.parquet'} (총 {n}종목)")
+        n3 = upsert(OUT_DIR / "institution_history.parquet", pd.DataFrame(history_rows(rows)), ["ticker", "asof"])
+        print(f"[저장] {OUT_DIR/'institution_history.parquet'} (총 {n3}행)")
     if hists:
         hh = pd.concat(hists, ignore_index=True)
         n2 = upsert(OUT_DIR / "earnings_history.parquet", hh, ["ticker", "date"])

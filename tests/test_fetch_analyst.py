@@ -46,3 +46,33 @@ def test_입력_순서가_유지된다():
 def test_깨진_asof는_대상으로_남긴다():
     df = pd.DataFrame({"ticker": ["AAPL"], "asof": ["없음"]})
     assert fa.pending_tickers(["AAPL"], df, 30, "2026-08-14") == ["AAPL"]
+
+
+def test_history_rows는_세_컬럼만_뽑는다():
+    rows = [{"ticker": "AAPL", "asof": "2026-08-10", "held_pct_institutions": 0.62,
+             "rec_mean": 1.8, "n_analysts": 30}]
+    hist = fa.history_rows(rows)
+    assert hist == [{"ticker": "AAPL", "asof": "2026-08-10", "held_pct_institutions": 0.62}]
+
+
+def test_보유비중이_None이어도_행이_살아남는다():
+    rows = [{"ticker": "NVDA", "asof": "2026-08-10", "held_pct_institutions": None}]
+    hist = fa.history_rows(rows)
+    assert len(hist) == 1
+    assert hist[0]["held_pct_institutions"] is None
+
+
+def test_컬럼_자체가_없어도_행이_빠지지_않는다():
+    rows = [{"ticker": "MSFT", "asof": "2026-08-10"}]
+    hist = fa.history_rows(rows)
+    assert len(hist) == 1
+    assert hist[0]["held_pct_institutions"] is None
+
+
+def test_여러_행이_모두_보존된다():
+    rows = [
+        {"ticker": "AAPL", "asof": "2026-08-10", "held_pct_institutions": 0.62},
+        {"ticker": "NVDA", "asof": "2026-08-10", "held_pct_institutions": None},
+    ]
+    hist = fa.history_rows(rows)
+    assert len(hist) == 2
