@@ -275,6 +275,8 @@ def main():
         hh = pd.concat(hists, ignore_index=True)
         n2 = upsert(OUT_DIR / "earnings_history.parquet", hh, ["ticker", "date"])
         print(f"[저장] {OUT_DIR/'earnings_history.parquet'} (총 {n2}행)")
+    if not rows and not hists:
+        print("수집된 행이 없습니다.")
 
 
 if __name__ == "__main__":
