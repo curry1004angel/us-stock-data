@@ -27,7 +27,15 @@ CONCEPTS = {
     ],
     "operating_profit": ["OperatingIncomeLoss"],
     "net_income": ["NetIncomeLoss"],
+    # 주당순이익. units 키가 USD가 아니라 USD/shares이고 값이 소수라 별도 처리가 필요하다.
+    "eps": ["EarningsPerShareBasic", "EarningsPerShareBasicAndDiluted"],
 }
+
+# companyfacts의 units 키. EPS만 주당 단위이고 소수다.
+UNIT_FOR = {a: "USD" for a in CONCEPTS}
+UNIT_FOR["eps"] = "USD/shares"
+CAST_FOR = {a: int for a in CONCEPTS}
+CAST_FOR["eps"] = float
 
 
 def cik_to_ticker():
@@ -35,7 +43,7 @@ def cik_to_ticker():
     return {int(r["cik_str"]): r["ticker"].upper() for r in data.values()}
 
 
-def extract_account(usgaap, tags):
+def extract_account(usgaap, tags, unit="USD", cast=int):
     # period_key((연도, 기간)) -> (태그우선순위, 제출일, 금액). 기간은 종료일 달력 분기/연간.
     # 상위 태그·최신 제출분을 우선해 정정공시·비교공시 중복을 정리한다.
     best = {}
@@ -43,7 +51,7 @@ def extract_account(usgaap, tags):
         node = usgaap.get(tag)
         if not node:
             continue
-        for p in node.get("units", {}).get("USD", []):
+        for p in node.get("units", {}).get(unit, []):
             start, end, val = p.get("start"), p.get("end"), p.get("val")
             filed = p.get("filed", "")
             if not (start and end and val is not None):
@@ -64,7 +72,7 @@ def extract_account(usgaap, tags):
                 continue                                # YTD(6·9개월) 등은 제외
             cur = best.get(key)
             if cur is None or pi < cur[0] or (pi == cur[0] and filed > cur[1]):
-                best[key] = (pi, filed, int(val))
+                best[key] = (pi, filed, cast(val))
     return {k: v[2] for k, v in best.items()}
 
 
@@ -114,7 +122,8 @@ def main():
                 continue
             matched += 1
             for account, tags in CONCEPTS.items():
-                for (year, period), val in extract_account(usgaap, tags).items():
+                pairs = extract_account(usgaap, tags, UNIT_FOR[account], CAST_FOR[account])
+                for (year, period), val in pairs.items():
                     if period == "annual":
                         a_rows.append({"ticker": ticker, "year": year, "account": account, "amount": val})
                     else:

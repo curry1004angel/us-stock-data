@@ -12,6 +12,12 @@ QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
 BS_ACCOUNTS = {"total_assets", "total_liabilities", "total_equity",
                "current_assets", "current_liabilities"}
 
+# 누락 분기를 "연간 − 나머지 3분기 합"으로 도출할 수 없는 계정.
+# 재무상태표는 잔액(시점)이라 합이 성립하지 않고, EPS는 기중 주식수가 변하면
+# 연간이 분기 합과 어긋난다. 게다가 보강 로직이 int()로 캐스팅하므로
+# 통과시키면 미국 EPS(4.93달러)가 4로 잘린다.
+NON_ADDITIVE_ACCOUNTS = BS_ACCOUNTS | {"eps"}
+
 
 def pct_change(current, previous):
     if previous is None or previous == 0 or pd.isna(previous):
@@ -40,7 +46,7 @@ def fill_missing_quarters():
     # 1) 결산 분기 투표: 연간 Y가 (Y,e)로 끝나는 연속 4분기 합과 맞으면 e에 한 표
     votes = {}
     for t, acct, y, amt in ann:
-        if acct in BS_ACCOUNTS:
+        if acct in NON_ADDITIVE_ACCOUNTS:
             continue
         for e in (1, 2, 3, 4):
             vals = [amounts.get((t, acct, y * 4 + e - k)) for k in range(4)]
@@ -51,7 +57,7 @@ def fill_missing_quarters():
     # 2) 확정 구성에서 4분기 중 3개만 있으면 누락분 = 연간 − 3분기 합 (BS 계정 제외)
     fills = []
     for t, acct, y, amt in ann:
-        if acct in BS_ACCOUNTS:
+        if acct in NON_ADDITIVE_ACCOUNTS:
             continue
         e = fiscal_end.get(t, 4)
         seqs = [y * 4 + e - k for k in range(4)]

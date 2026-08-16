@@ -1,0 +1,41 @@
+name: 주간 애널리스트 데이터 수집
+
+on:
+  schedule:
+    # 매주 일요일 UTC 03:00 (토요일 02:00 financials.yml 실행 이후)
+    # = 일요일 12:00 KST
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 애널리스트 데이터 수집
+        run: |
+          # --limit 1500 이유: 전체 5900여 종목 × info 호출 시 작업 제한시간(6시간)을 초과한다.
+          # 매주 1500종목씩 처리하면 약 4주에 전종목을 한 바퀴 돈다.
+          # --max-age 30이 기본값이므로 30일이 지난 종목은 자동으로 재대상이 되어 순환한다.
+          python scripts/fetch_analyst.py --all --limit 1500 --sleep 0.3
+
+      - name: 변경사항 커밋 및 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/analyst/
+          git diff --staged --quiet || git commit -m "애널리스트 업데이트: $(date -u +%Y%m%d)"
+          git pull --rebase
+          git push
