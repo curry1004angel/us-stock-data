@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 
 OUT = Path("data/screener/shares_snapshot.parquet")
+HISTORY = Path("data/screener/shares_history.parquet")
 COLUMNS = ["ticker", "asof", "shares", "float_shares", "market_cap", "shares_qoq"]
 SHARE_ROWS = ["Ordinary Shares Number", "Share Issued"]
 
@@ -37,6 +38,21 @@ def shares_qoq_from_balance(bs):
     if len(vals) < 2 or any(pd.isna(v) for v in vals) or vals[1] == 0:
         return None
     return round((vals[0] - vals[1]) / abs(vals[1]) * 100, 2)
+
+
+def update_history(snap: pd.DataFrame, path: Path = HISTORY) -> int:
+    # 주식수 이력을 종목×일자로 누적한다. 같은 (ticker, asof)는 최신 값으로 갈아끼운다.
+    new = snap[["ticker", "asof", "shares", "market_cap"]].copy()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        old = pd.read_parquet(path)
+        combined = pd.concat([old, new], ignore_index=True)
+    else:
+        combined = new
+    combined = combined.drop_duplicates(subset=["ticker", "asof"], keep="last")
+    combined = combined.sort_values(["ticker", "asof"]).reset_index(drop=True)
+    combined.to_parquet(path, index=False, compression="snappy")
+    return len(combined)
 
 
 def main():
@@ -67,6 +83,9 @@ def main():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(OUT, index=False, compression="snappy")
     print(f"저장 완료: {len(out)}행 → {OUT}")
+
+    n = update_history(out)
+    print(f"이력 저장 완료: {n}행 → {HISTORY}")
 
 
 if __name__ == "__main__":
