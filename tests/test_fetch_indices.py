@@ -9,7 +9,7 @@ import fetch_indices as fi
 
 
 def fdr_like():
-    # FDR DataReader 출력 모양. 인덱스=DatetimeIndex, 컬럼=Open/High/Low/Close/Volume.
+    # yfinance history() 출력 모양. 인덱스=DatetimeIndex, 컬럼=Open/High/Low/Close/Volume.
     idx = pd.DatetimeIndex(["2026-08-12", "2026-08-13"], name="Date")
     return pd.DataFrame(
         {"Open": [2500.0, 2510.0], "High": [2520.0, 2530.0], "Low": [2490.0, 2505.0],
@@ -35,6 +35,30 @@ def test_거래량이_없는_지수는_0으로_채운다():
     df = fdr_like().drop(columns=["Volume"])
     out = fi.normalize(df)
     assert list(out["volume"]) == [0, 0]
+
+
+def test_거래량이_NaN이면_0으로_채운다():
+    # 데이터 소스가 폴백되면 Volume 컬럼은 있는데 값이 전부 NaN으로 온다.
+    df = fdr_like()
+    df["Volume"] = [float("nan"), float("nan")]
+    out = fi.normalize(df)
+    assert list(out["volume"]) == [0, 0]
+    assert out["volume"].dtype == "int64"
+
+
+def test_거래량_일부만_NaN이면_그_행만_0이_된다():
+    df = fdr_like()
+    df["Volume"] = [float("nan"), 410000.0]
+    out = fi.normalize(df)
+    assert list(out["volume"]) == [0, 410000]
+
+
+def test_시간대가_붙은_인덱스도_처리된다():
+    # yfinance는 tz-aware DatetimeIndex를 준다.
+    df = fdr_like()
+    df.index = df.index.tz_localize("America/New_York")
+    out = fi.normalize(df)
+    assert list(out["date"]) == ["20260812", "20260813"]
 
 
 def test_날짜순으로_정렬된다():
