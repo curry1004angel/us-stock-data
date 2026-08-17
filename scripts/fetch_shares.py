@@ -55,10 +55,17 @@ def update_history(snap: pd.DataFrame, path: Path = HISTORY) -> int:
     return len(combined)
 
 
+def load_tickers(path="data/stock_list.csv"):
+    # keep_default_na=False가 없으면 티커 "NA"(Nano Labs Ltd)를 pandas가 결측값으로
+    # 해석해 float NaN으로 만든다. dtype=str로도 막히지 않아 이후 문자열 연산에서 죽는다.
+    # 결측 해석을 끄면 빈 셀이 ""로 오므로 그것만 걸러낸다.
+    sl = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    return [t for t in sl["ticker"] if t.strip()]
+
+
 def main():
     asof = date.today().strftime("%Y%m%d")
-    sl = pd.read_csv("data/stock_list.csv", dtype=str, encoding="utf-8-sig")
-    tickers = sl["ticker"].tolist()
+    tickers = load_tickers()
     print(f"주식수 스냅샷: {len(tickers)}종목")
 
     rows = []

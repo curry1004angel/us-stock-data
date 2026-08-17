@@ -9,6 +9,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import fetch_shares as fs
 
 
+def test_티커_NA를_결측값으로_읽지_않는다(tmp_path):
+    # 실제 상장 종목 Nano Labs Ltd의 티커가 "NA"다. pandas 기본 설정은 이를 NaN으로 만든다.
+    csv = tmp_path / "stock_list.csv"
+    csv.write_text("ticker,name,market,industry\n"
+                   "NVDA,NVIDIA,NASDAQ,반도체\n"
+                   "NA,Nano Labs Ltd,NASDAQ,반도체\n",
+                   encoding="utf-8-sig")
+    assert fs.load_tickers(csv) == ["NVDA", "NA"]
+
+
+def test_빈_티커_행은_건너뛴다(tmp_path):
+    csv = tmp_path / "stock_list.csv"
+    csv.write_text("ticker,name,market,industry\n"
+                   "NVDA,NVIDIA,NASDAQ,반도체\n"
+                   ",이름만있음,NASDAQ,반도체\n",
+                   encoding="utf-8-sig")
+    assert fs.load_tickers(csv) == ["NVDA"]
+
+
 def test_info에서_필드를_뽑는다():
     info = {"sharesOutstanding": 24220525225, "floatShares": 23000000000, "marketCap": 4000000000000}
     row = fs.from_info(info, "NVDA", "20260814")

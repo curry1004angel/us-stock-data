@@ -32,7 +32,11 @@ jobs:
       - name: QoQ/YoY 계산
         run: python scripts/calculate_changes.py
 
+      # always()로 두는 이유. 재무제표 수집만 2시간이 걸리는데, 뒤 단계가 하나라도
+      # 실패하면 커밋이 스킵되어 수집 결과가 통째로 버려진다. 커밋은 항상 실행하고
+      # 실패한 단계 때문에 잡은 그대로 실패로 표시된다.
       - name: 변경사항 커밋 및 푸시
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
