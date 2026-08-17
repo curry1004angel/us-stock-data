@@ -49,34 +49,48 @@ def test_None_info도_크래시하지_않는다():
     assert row["shares"] is None
 
 
-def test_shares_qoq는_잔액표가_없으면_None():
-    assert fs.shares_qoq_from_balance(None) is None
-    assert fs.shares_qoq_from_balance(pd.DataFrame()) is None
-
-
-def test_shares_qoq는_직전분기_대비_퍼센트():
-    bs = pd.DataFrame(
-        [[24220525225.0, 24304000000.0]],
+def nvda_잔액표(values):
+    # 엔비디아 회계연도 기준 열 구성(1월 결산).
+    return pd.DataFrame(
+        [values],
         index=["Ordinary Shares Number"],
-        columns=[pd.Timestamp("2026-04-30"), pd.Timestamp("2026-01-31")],
+        columns=[pd.Timestamp("2026-04-30"), pd.Timestamp("2026-01-31"),
+                 pd.Timestamp("2025-10-31"), pd.Timestamp("2025-07-31"),
+                 pd.Timestamp("2025-04-30")],
     )
-    assert fs.shares_qoq_from_balance(bs) == pytest.approx(-0.34, abs=0.01)
+
+
+def test_shares_yoy는_잔액표가_없으면_None():
+    assert fs.shares_yoy_from_balance(None) is None
+    assert fs.shares_yoy_from_balance(pd.DataFrame()) is None
+
+
+def test_shares_yoy는_1년전_같은분기_대비_퍼센트():
+    bs = nvda_잔액표([24220525225.0, 24304000000.0, 24305000000.0,
+                     24347000000.0, 24387557065.0])
+    assert fs.shares_yoy_from_balance(bs) == pytest.approx(-0.68, abs=0.01)
 
 
 def test_주식수_행이_없으면_None():
     bs = pd.DataFrame([[1.0, 2.0]], index=["Total Assets"],
                       columns=[pd.Timestamp("2026-04-30"), pd.Timestamp("2026-01-31")])
-    assert fs.shares_qoq_from_balance(bs) is None
+    assert fs.shares_yoy_from_balance(bs) is None
 
 
-def test_직전분기가_NaN이면_None():
-    # 최근 분기는 값이 있지만 직전 분기가 NaN이면 비교할 수 없으므로 None을 반환한다.
+def test_1년_전_분기가_NaN이면_None():
+    bs = nvda_잔액표([24220525225.0, 24304000000.0, 24305000000.0,
+                     24347000000.0, pd.NA])
+    assert fs.shares_yoy_from_balance(bs) is None
+
+
+def test_1년_전_분기_열이_없으면_None():
     bs = pd.DataFrame(
-        [[24220525225.0, pd.NA]],
+        [[24220525225.0, 24304000000.0, 24305000000.0, 24347000000.0]],
         index=["Ordinary Shares Number"],
-        columns=[pd.Timestamp("2026-04-30"), pd.Timestamp("2026-01-31")],
+        columns=[pd.Timestamp("2026-04-30"), pd.Timestamp("2026-01-31"),
+                 pd.Timestamp("2025-10-31"), pd.Timestamp("2025-07-31")],
     )
-    assert fs.shares_qoq_from_balance(bs) is None
+    assert fs.shares_yoy_from_balance(bs) is None
 
 
 def test_main이_재무상태표_실패에도_시총을_지킨다(tmp_path, monkeypatch):
@@ -113,7 +127,7 @@ def test_main이_재무상태표_실패에도_시총을_지킨다(tmp_path, monk
     result = pd.read_parquet(tmp_path / "data/screener/shares_snapshot.parquet")
     assert len(result) == 1
     assert result.iloc[0]["market_cap"] == 4000000000000
-    assert pd.isna(result.iloc[0]["shares_qoq"])
+    assert pd.isna(result.iloc[0]["shares_yoy"])
 
 
 def test_다른_asof_행은_둘_다_남는다(tmp_path):

@@ -1,4 +1,4 @@
-# 미국 상장사의 시가총액·유통주식수 스냅샷과 주식수 분기 변화율을 수집하는 스크립트
+# 미국 상장사의 시가총액·유통주식수 스냅샷과 주식수 전년 대비 변화율을 수집하는 스크립트
 #
 # EPS 계산에는 쓰지 않는다(fetch_financials.py가 공시 EPS를 직접 받는다).
 # S 항목의 규모 표시와 자사주 매입 판정(주식수 감소)에만 쓴다.
@@ -11,7 +11,7 @@ import yfinance as yf
 
 OUT = Path("data/screener/shares_snapshot.parquet")
 HISTORY = Path("data/screener/shares_history.parquet")
-COLUMNS = ["ticker", "asof", "shares", "float_shares", "market_cap", "shares_qoq"]
+COLUMNS = ["ticker", "asof", "shares", "float_shares", "market_cap", "shares_yoy"]
 SHARE_ROWS = ["Ordinary Shares Number", "Share Issued"]
 
 
@@ -23,21 +23,35 @@ def from_info(info: dict, ticker: str, asof: str) -> dict:
         "shares": info.get("sharesOutstanding"),
         "float_shares": info.get("floatShares"),
         "market_cap": info.get("marketCap"),
-        "shares_qoq": None,
+        "shares_yoy": None,
     }
 
 
-def shares_qoq_from_balance(bs):
-    # 야후 분기 재무상태표에서 최근 두 분기의 주식수를 비교한다. 열은 최신이 왼쪽이다.
+def shares_yoy_from_balance(bs):
+    # 야후 분기 재무상태표에서 최근 분기와 1년 전 같은 분기의 주식수를 비교한다.
+    # 열은 최신이 왼쪽이다.
+    #
+    # 직전 분기가 아니라 같은 분기끼리 비교한다. 한국 레포에서 연말 열에만 우선주가
+    # 합산돼 들어오는 오염이 확인됐고, 두 레포가 같은 의미의 지표를 내도록 맞춘다.
+    # 자사주 매입 추세도 1년 창이 분기보다 적절하다.
     if bs is None or len(bs) == 0:
         return None
     row = next((r for r in SHARE_ROWS if r in bs.index), None)
     if row is None:
         return None
-    vals = bs.loc[row].tolist()[:2]
-    if len(vals) < 2 or any(pd.isna(v) for v in vals) or vals[1] == 0:
+    cols = list(bs.columns)
+    if not cols:
         return None
-    return round((vals[0] - vals[1]) / abs(vals[1]) * 100, 2)
+    # 결산월이 분기마다 며칠씩 밀리는 종목이 있어 정확일치 대신 45일 허용오차를 둔다.
+    # 인접 분기는 90일 이상 떨어져 있어 오매칭되지 않는다.
+    target = cols[0] - pd.DateOffset(years=1)
+    prior = next((c for c in cols[1:] if abs((c - target).days) <= 45), None)
+    if prior is None:
+        return None
+    cur, prev = bs.loc[row, cols[0]], bs.loc[row, prior]
+    if pd.isna(cur) or pd.isna(prev) or prev == 0:
+        return None
+    return round((cur - prev) / abs(prev) * 100, 2)
 
 
 def update_history(snap: pd.DataFrame, path: Path = HISTORY) -> int:
@@ -77,9 +91,9 @@ def main():
         except Exception:  # noqa: BLE001
             row = from_info({}, tk, asof)
         try:
-            row["shares_qoq"] = shares_qoq_from_balance(t.quarterly_balance_sheet)
+            row["shares_yoy"] = shares_yoy_from_balance(t.quarterly_balance_sheet)
         except Exception:  # noqa: BLE001
-            row["shares_qoq"] = None
+            row["shares_yoy"] = None
         rows.append(row)
         time.sleep(0.1)
         if i % 200 == 0:
