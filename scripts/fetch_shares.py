@@ -27,7 +27,7 @@ def from_info(info: dict, ticker: str, asof: str) -> dict:
     }
 
 
-def shares_yoy_from_balance(bs):
+def shares_yoy_from_balance(bs, current_shares=None):
     # 야후 분기 재무상태표에서 최근 분기와 1년 전 같은 분기의 주식수를 비교한다.
     # 열은 최신이 왼쪽이다.
     #
@@ -50,6 +50,12 @@ def shares_yoy_from_balance(bs):
         return None
     cur, prev = bs.loc[row, cols[0]], bs.loc[row, prior]
     if pd.isna(cur) or pd.isna(prev) or prev == 0:
+        return None
+    # 야후가 최신 분기 열만 천 주 단위로 주는 종목이 있다(CME 359,275 대 1년 전 359,650,138).
+    # 그대로 계산하면 -99.9% 감자로 잡힌다. 5919종목 중 458종목이 이 오류였다.
+    # info의 sharesOutstanding과 2배 넘게 어긋나면 단위가 다른 것으로 보고 버린다.
+    # 액면병합처럼 실제로 줄어든 경우는 현재 주식수도 같이 줄어 있어 이 관문을 통과한다.
+    if current_shares and not pd.isna(current_shares) and not (0.5 <= cur / current_shares <= 2):
         return None
     return round((cur - prev) / abs(prev) * 100, 2)
 
@@ -91,7 +97,8 @@ def main():
         except Exception:  # noqa: BLE001
             row = from_info({}, tk, asof)
         try:
-            row["shares_yoy"] = shares_yoy_from_balance(t.quarterly_balance_sheet)
+            row["shares_yoy"] = shares_yoy_from_balance(
+                t.quarterly_balance_sheet, row["shares"])
         except Exception:  # noqa: BLE001
             row["shares_yoy"] = None
         rows.append(row)

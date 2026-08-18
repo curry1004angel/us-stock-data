@@ -83,6 +83,22 @@ def test_1년_전_분기가_NaN이면_None():
     assert fs.shares_yoy_from_balance(bs) is None
 
 
+def test_최신열이_천주단위면_버린다():
+    # CME 실측. 최신 열만 천 주 단위로 와서 그대로 계산하면 -99.9% 감자가 잡힌다.
+    bs = nvda_잔액표([359275.0, 358953138.0, 359852138.0, 359650138.0, 359650138.0])
+    assert fs.shares_yoy_from_balance(bs, 359576125.0) is None
+
+
+def test_실제_감소는_현재주식수도_같이_줄어_통과한다():
+    bs = nvda_잔액표([35929535.0, 35929535.0, 35933616.0, 175565535.0, 159155279.0])
+    assert fs.shares_yoy_from_balance(bs, 36854762.0) == pytest.approx(-77.42, abs=0.01)
+
+
+def test_현재주식수가_없으면_검증을_건너뛴다():
+    bs = nvda_잔액표([90.0, 999.0, 97.0, 98.0, 100.0])
+    assert fs.shares_yoy_from_balance(bs, None) == pytest.approx(-10.0, abs=0.01)
+
+
 def test_1년_전_분기_열이_없으면_None():
     bs = pd.DataFrame(
         [[24220525225.0, 24304000000.0, 24305000000.0, 24347000000.0]],
