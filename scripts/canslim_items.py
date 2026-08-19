@@ -30,6 +30,8 @@ L_RANK_MAX = 3                # 스펙 5.6 핵심요소 3. 업종 내 3위 이�
 # 서로 피어가 되어 업종 백분위가 거짓이 된다 (스펙 5.6).
 INDUSTRY_SENTINELS = {"", "(분류 없음)", "-", "nan", "None"}
 
+I_HELD_MAX = 0.90             # 스펙 5.7 부가요소 1. 기관 비중이 과도하지 않음
+
 
 def _rows(b, ticker, account, annual=False):
     src = b.annual if annual else b.quarterly
@@ -391,3 +393,39 @@ def judge_l(ticker, b, ind_stats, corr_drawdown):
     # RS 70 미만은 부진 종목이므로 다른 요소와 무관하게 즉시 F다 (스펙 5.6).
     hard_fail = c1.passed is False
     return grade_item("L", [c1, c2, c3], [b1, b2], hard_fail=hard_fail)
+
+
+def judge_i_us(ticker, b):
+    hist = b.inst_history
+    series = []
+    if len(hist):
+        h = hist[hist["ticker"] == ticker].sort_values("asof")
+        # 같은 asof가 중복된 행이 있으면 실제로는 스냅샷 하나인데 둘 이상으로 세게
+        # 되어 비교 대상이 없는데도 핵심요소가 계산된 것처럼 오판정된다. 같은
+        # 날짜는 하나로 합친다 (스펙 5.7).
+        h = h.drop_duplicates("asof", keep="last")
+        series = [(r["asof"], r["held_pct_institutions"]) for _, r in h.iterrows()
+                  if r["held_pct_institutions"] is not None
+                  and not pd.isna(r["held_pct_institutions"])]
+
+    # 핵심요소 1. 기관 보유 비중이 존재하고 직전 스냅샷 대비 증가
+    if len(series) < 2:
+        c1 = Criterion("기관 보유 비중 증가", None,
+                       f"비교할 이전 스냅샷 없음 (현재 {len(series)}개)")
+    else:
+        (_, prev), (asof, cur) = series[-2], series[-1]
+        c1 = Criterion("기관 보유 비중 증가", bool(cur > prev),
+                       f"{prev * 100:.1f}% -> {cur * 100:.1f}% ({asof})")
+
+    # 부가요소 1. 기관 비중이 과도하지 않음
+    held = series[-1][1] if series else None
+    if held is None and ticker in getattr(b.analyst, "index", []):
+        v = b.analyst.loc[ticker].get("held_pct_institutions")
+        held = None if v is None or pd.isna(v) else float(v)
+    if held is None:
+        b1 = Criterion(f"기관 비중 {I_HELD_MAX * 100:.0f}% 미만", None, "기관 비중 없음")
+    else:
+        b1 = Criterion(f"기관 비중 {I_HELD_MAX * 100:.0f}% 미만", bool(held < I_HELD_MAX),
+                       f"{held * 100:.1f}%")
+
+    return grade_item("I", [c1], [b1])

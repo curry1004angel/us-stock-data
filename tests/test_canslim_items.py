@@ -591,3 +591,87 @@ def test_L_자기_RS는_없어도_업종이_알려지면_하드F가_걸리지_�
     assert r.core[1].passed is True
     assert r.core[2].passed is None
     assert r.grade == "C"
+
+
+# ---------- I 항목 ----------
+
+def 기관이력(rows):
+    # rows = [(asof, held_pct)]
+    return pd.DataFrame([{"ticker": "AAA", "asof": a, "held_pct_institutions": p}
+                         for a, p in rows])
+
+
+def test_I_기관비중이_직전_스냅샷보다_늘면_핵심_통과():
+    b = 번들(inst=기관이력([("2026-08-11", 0.60), ("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.core[0].passed is True
+
+
+def test_I_기관비중이_줄면_핵심_미통과():
+    b = 번들(inst=기관이력([("2026-08-11", 0.70), ("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.core[0].passed is False
+
+
+def test_I_스냅샷이_하나뿐이면_데이터부족():
+    b = 번들(inst=기관이력([("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_I_이력이_아예_없으면_데이터부족():
+    r = ci.judge_i_us("AAA", 번들())
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_I_기관비중이_90퍼센트_미만이면_부가_통과():
+    b = 번들(inst=기관이력([("2026-08-11", 0.60), ("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.bonus[0].passed is True
+
+
+def test_I_기관비중이_과도하면_부가_미통과():
+    b = 번들(inst=기관이력([("2026-08-11", 0.90), ("2026-08-18", 0.95)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.95]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.bonus[0].passed is False
+
+
+def test_I_다른_종목_이력만_있으면_데이터부족():
+    # inst_history 자체는 비어있지 않지만("이력이 아예 없으면"과 다른 경로), 조회하는
+    # 티커의 행이 하나도 없는 경우다. 티커 필터 후 빈 데이터프레임이 되는 경로를 검증한다.
+    b = 번들(inst=기관이력([("2026-08-11", 0.60), ("2026-08-18", 0.65)]))
+    r = ci.judge_i_us("BBB", b)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_I_스냅샷이_세개_이상이면_최근_두개만_비교한다():
+    # 스냅샷이 누적될수록(정상 운영 경로) series[-2], series[-1]이 항상 가장 최근
+    # 두 개를 가리켜야 한다. 더 과거의 하락(0.80 -> 0.60)은 무시되고 최근 두 스냅샷
+    # (0.60 -> 0.65)만으로 판정해야 한다.
+    b = 번들(inst=기관이력([("2026-08-01", 0.80), ("2026-08-11", 0.60), ("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.core[0].passed is True
+    assert "60.0% -> 65.0%" in r.core[0].detail
+
+
+def test_I_같은_asof가_중복되면_한_스냅샷으로_취급되어_데이터부족():
+    # 파이프라인이 같은 날짜의 스냅샷을 두 번 적재하면 asof가 중복된 행이 생길 수
+    # 있다. 이걸 그대로 세면 "스냅샷 2개"로 착각해 비교 대상이 없는데도 핵심요소가
+    # 계산된 것처럼 오판정된다. 이 테스트는 asof 중복 제거 가드를 고정한다.
+    b = 번들(inst=기관이력([("2026-08-18", 0.60), ("2026-08-18", 0.65)]),
+            analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                                 index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_us("AAA", b)
+    assert r.grade == cs.INSUFFICIENT
