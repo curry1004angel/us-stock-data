@@ -38,7 +38,9 @@ def test_조정중이면_형성중이고_피봇은_직전_고점():
     st = cb.detect_base(상승후_조정_일봉())
     assert st.in_base is True
     assert "형성중" in st.label
-    assert st.pivot == pytest.approx(149.6, abs=2.0)      # 250일차 종가 근처(rolling(252) 워밍업 때문에 최대 5거래일 지연)
+    # 252일 롤링 워밍업 때문에 Stage2 시작이 합성 고점보다 2거래일 뒤로 밀리고,
+    # 주봉 버킷이 그 주의 금요일 종가를 피봇으로 잡는다. 리팩터 전후 모두 같은 값이다.
+    assert st.pivot == pytest.approx(148.104, abs=0.01)
 
 
 def test_데이터가_짧으면_Stage2_아님():
