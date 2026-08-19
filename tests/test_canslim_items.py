@@ -136,3 +136,109 @@ def test_C_영업이익이_NaN이면_일회성_판정은_미계산():
     r = ci.judge_c("AAA", b, {})
     assert r.core[1].passed is None
     assert "nan" not in r.core[1].detail.lower()
+
+
+# ---------- A 항목 ----------
+
+def 연간프레임(rows, account="eps"):
+    # rows = [(year, amount, yoy)]
+    return pd.DataFrame(
+        [{"ticker": "AAA", "year": y, "account": account, "amount": a, "yoy": v}
+         for y, a, v in rows]
+    )
+
+
+def test_A_3년_누적증가율과_매해증가를_충족하면_핵심_통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert [c.passed for c in r.core] == [True, True]
+
+
+def test_A_누적증가율이_25퍼센트_미만이면_핵심1_미통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.02, 2.0),
+                                 (2024, 1.04, 2.0), (2025, 1.06, 1.9)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.core[0].passed is False
+
+
+def test_A_한_해라도_감소하면_핵심2_미통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 2.0, 100.0),
+                                 (2024, 1.5, -25.0), (2025, 3.0, 100.0)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.core[1].passed is False
+
+
+def test_A_연도가_4개_미만이면_데이터부족():
+    b = 번들(annual={("AAA", "eps"): 연간프레임([(2024, 1.0, None), (2025, 2.0, 100.0)])})
+    r = ci.judge_a("AAA", b)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_A_ROE가_17퍼센트_이상이면_부가1_통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+        ("AAA", "net_income"): 연간프레임([(2025, 200.0, None)], "net_income"),
+        ("AAA", "total_equity"): 연간프레임([(2025, 1000.0, None)], "total_equity"),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[0].passed is True
+    assert "20.0%" in r.bonus[0].detail
+
+
+def test_A_현금흐름이_순이익의_1_2배_이상이면_부가2_통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+        ("AAA", "net_income"): 연간프레임([(2025, 100.0, None)], "net_income"),
+        ("AAA", "operating_cashflow"): 연간프레임([(2025, 130.0, None)], "operating_cashflow"),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[1].passed is True
+
+
+def test_A_순이익이_0이하면_현금흐름_부가는_미계산():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+        ("AAA", "net_income"): 연간프레임([(2025, -50.0, None)], "net_income"),
+        ("AAA", "operating_cashflow"): 연간프레임([(2025, 130.0, None)], "operating_cashflow"),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[1].passed is None
+
+
+def test_A_증가율_표준편차가_평균의_절반_이하면_부가3_통과():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.0), (2025, 2.9, 44.0)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[2].passed is True
+
+
+def test_A_내년_추정이익이_올해보다_많으면_부가4_통과():
+    analyst = pd.DataFrame({"eps_0y_current": [1.0], "eps_1y_current": [1.5]},
+                           index=pd.Index(["AAA"], name="ticker"))
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+    }, analyst=analyst)
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[3].passed is True
+
+
+def test_A_애널리스트_커버가_없으면_부가4는_미계산():
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[3].passed is None

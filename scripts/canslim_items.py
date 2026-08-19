@@ -1,4 +1,6 @@
 # CANSLIM 여섯 항목(C·A·N·S·L·I)을 종목 단위로 판정하는 모듈
+import pandas as pd
+
 from canslim_loaders import QUARTER_ORDER
 from canslim_scoring import Criterion, grade_item
 
@@ -6,6 +8,12 @@ C_EPS_MIN_YOY = 20.0          # 스펙 5.2 핵심요소 1
 ONE_OFF_MULT = 3.0            # 순이익 > 영업이익 × 3 이면 일회성 의심
 C_REVENUE_MIN_YOY = 25.0      # 스펙 5.2 부가요소 1
 PEER_STRONG_REVENUE = 25.0    # 스펙 5.2 부가요소 2
+
+A_CAGR_MIN = 25.0             # 스펙 5.3 핵심요소 1. 3년 누적 증가율 하한
+A_YEARS = 3                   # 3판에서 "4~5년"에서 3년으로 단축됨
+A_ROE_MIN = 17.0              # 스펙 5.3 부가요소 1
+A_CF_TO_NI_MIN = 1.2          # 스펙 5.3 부가요소 2
+A_STABILITY_MAX = 0.50        # 스펙 5.3 부가요소 3. 표준편차 ÷ 평균
 
 
 def _rows(b, ticker, account, annual=False):
@@ -106,3 +114,87 @@ def judge_c(ticker, b, peer_revenue_yoy):
         b2 = Criterion("업종 내 강한 매출 종목 존재", n >= 1, f"{industry} {n}종목")
 
     return grade_item("C", [c1, c2, c3], [b1, b2])
+
+
+def _annual_last(b, ticker, account):
+    d = _rows(b, ticker, account, annual=True)
+    if d is None or len(d) == 0:
+        return None
+    return d.sort_values("year").to_dict("records")[-1]
+
+
+def judge_a(ticker, b):
+    eps = _rows(b, ticker, "eps", annual=True)
+    recs = eps.sort_values("year").to_dict("records") if eps is not None else []
+    # 3년 증가율 3개를 내려면 연도가 4개 필요하다.
+    window = recs[-(A_YEARS + 1):]
+
+    if len(window) < A_YEARS + 1:
+        c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상", None,
+                       f"연간 EPS {len(recs)}개 (필요 {A_YEARS + 1}개)")
+        c2 = Criterion(f"{A_YEARS}년 연속 EPS 증가", None, "연간 EPS 부족")
+        growths = []
+    else:
+        first, last = window[0]["amount"], window[-1]["amount"]
+        # NaN은 truthy라 first<=0 같은 단순 비교로는 걸러지지 않는다. first는
+        # not(x and x>0) 관용구로, last는 pd.isna로 따로 막는다 (스펙 5.3).
+        if not (first and first > 0) or pd.isna(last):
+            c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상", None,
+                           "기준 연도 EPS가 0 이하이거나 값이 없어 증가율을 낼 수 없다")
+        else:
+            cum = (last - first) / abs(first) * 100
+            c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상",
+                           bool(cum >= A_CAGR_MIN),
+                           f"{window[0]['year']}~{window[-1]['year']} {cum:+.1f}%")
+        growths = [r["yoy"] for r in window[1:] if r.get("yoy") is not None and not pd.isna(r["yoy"])]
+        if len(growths) < A_YEARS:
+            c2 = Criterion(f"{A_YEARS}년 연속 EPS 증가", None, f"연간 증가율 {len(growths)}개")
+        else:
+            c2 = Criterion(f"{A_YEARS}년 연속 EPS 증가", all(g > 0 for g in growths),
+                           ", ".join(f"{g:+.1f}%" for g in growths))
+
+    # 부가요소 1. 자기자본이익률 17% 이상
+    ni_a, eq_a = _annual_last(b, ticker, "net_income"), _annual_last(b, ticker, "total_equity")
+    if (ni_a is None or eq_a is None or pd.isna(ni_a["amount"])
+            or not (eq_a["amount"] and eq_a["amount"] > 0)):
+        b1 = Criterion(f"자기자본이익률 {A_ROE_MIN:.0f}% 이상", None, "순이익 또는 자본총계 없음")
+    else:
+        roe = ni_a["amount"] / eq_a["amount"] * 100
+        b1 = Criterion(f"자기자본이익률 {A_ROE_MIN:.0f}% 이상", bool(roe >= A_ROE_MIN), f"{roe:.1f}%")
+
+    # 부가요소 2. 주당현금흐름이 EPS보다 20% 이상 많음.
+    # 주식수가 약분되어 영업현금흐름 ÷ 순이익으로 같은 판정이 된다 (스펙 5.3).
+    ocf_a = _annual_last(b, ticker, "operating_cashflow")
+    if (ni_a is None or ocf_a is None or pd.isna(ocf_a["amount"])
+            or not (ni_a["amount"] and ni_a["amount"] > 0)):
+        b2 = Criterion(f"영업현금흐름이 순이익의 {A_CF_TO_NI_MIN}배 이상", None,
+                       "순이익이 0 이하이거나 현금흐름 없음")
+    else:
+        ratio = ocf_a["amount"] / ni_a["amount"]
+        b2 = Criterion(f"영업현금흐름이 순이익의 {A_CF_TO_NI_MIN}배 이상",
+                       bool(ratio >= A_CF_TO_NI_MIN), f"{ratio:.2f}배")
+
+    # 부가요소 3. 3년 증가율의 표준편차가 평균의 50% 이하
+    if len(growths) < A_YEARS:
+        b3 = Criterion("이익 증가가 꾸준함", None, "증가율 표본 부족")
+    else:
+        s = pd.Series(growths, dtype="float64")
+        mean = s.mean()
+        if mean <= 0:
+            b3 = Criterion("이익 증가가 꾸준함", False, f"평균 증가율 {mean:+.1f}%")
+        else:
+            cv = s.std(ddof=0) / mean
+            b3 = Criterion("이익 증가가 꾸준함", bool(cv <= A_STABILITY_MAX),
+                           f"변동계수 {cv:.2f}")
+
+    # 부가요소 4. 내년 추정 이익이 올해보다 많음
+    row = b.analyst.loc[ticker] if ticker in getattr(b.analyst, "index", []) else None
+    cur_est = row.get("eps_0y_current") if row is not None else None
+    next_est = row.get("eps_1y_current") if row is not None else None
+    if cur_est is None or next_est is None or pd.isna(cur_est) or pd.isna(next_est):
+        b4 = Criterion("내년 추정 이익 증가", None, "애널리스트 추정 미커버")
+    else:
+        b4 = Criterion("내년 추정 이익 증가", bool(next_est > cur_est),
+                       f"{cur_est:.2f} -> {next_est:.2f}")
+
+    return grade_item("A", [c1, c2], [b1, b2, b3, b4])
