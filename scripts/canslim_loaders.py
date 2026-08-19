@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
-PRICE_YEARS = 2          # 50·200일선과 52주 고저에 2년이면 충분하다
+PRICE_YEARS = 2          # 50·200일선과 52주 고저에 2년이면 충분하다.
 INDEX_CODES = ["US500", "IXIC", "DJI"]
 
 
@@ -45,6 +45,13 @@ def _read_parquet(path, columns=None):
 
 def load_all(data_dir=Path("data")):
     data_dir = Path(data_dir)
+
+    # stock_list.csv와 results.csv는 종목 모집단 자체다. 없을 때 빈 프레임을 돌려주면
+    # canslim.py가 0종목을 순회해 빈 결과 CSV를 만들고, 일일 워크플로가 그것을 커밋해
+    # 직전의 정상 결과를 덮어쓴다. 나머지 여덟 개 입력과 달리 여기서는 크게 실패한다.
+    for required in (data_dir / "stock_list.csv", data_dir / "screener/results.csv"):
+        if not required.exists():
+            raise FileNotFoundError(f"CANSLIM 판정에 반드시 필요한 파일이 없습니다: {required}")
 
     # 티커 "NA"(Nano Labs Ltd)를 pandas가 결측값으로 파싱하지 않도록 기본 해석을 끈다.
     sl = pd.read_csv(data_dir / "stock_list.csv", dtype=str,

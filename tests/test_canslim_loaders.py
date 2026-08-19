@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import canslim_loaders as cl
@@ -114,3 +115,11 @@ def test_애널리스트_파일이_없어도_빈_프레임으로_로드된다(tm
 def test_분기키는_연도와_분기를_정렬가능한_정수로_만든다():
     assert cl.quarter_key(2026, "1Q") < cl.quarter_key(2026, "2Q")
     assert cl.quarter_key(2025, "4Q") < cl.quarter_key(2026, "1Q")
+
+
+def test_필수_파일이_없으면_명확한_오류로_멈춘다(tmp_path):
+    # 종목 모집단 파일이 없을 때 빈 프레임을 돌려주면 빈 결과가 커밋돼 직전 결과를 덮어쓴다.
+    데이터셋_만들기(tmp_path)
+    (tmp_path / "screener/results.csv").unlink()
+    with pytest.raises(FileNotFoundError, match="반드시 필요한 파일"):
+        cl.load_all(tmp_path)
