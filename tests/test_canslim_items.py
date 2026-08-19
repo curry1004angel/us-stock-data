@@ -285,3 +285,103 @@ def test_A_영업현금흐름이_NaN이면_현금흐름_부가는_미계산():
     r = ci.judge_a("AAA", b)
     assert r.bonus[1].passed is None
     assert "nan" not in r.bonus[1].detail.lower()
+
+
+# ---------- N 항목 ----------
+
+import canslim_bases as cb_
+
+
+def 결과행(**kw):
+    base = {"close": 100.0, "high_52w": 100.0, "volume": 1_000_000}
+    base.update(kw)
+    return pd.DataFrame([base], index=pd.Index(["AAA"], name="ticker"))
+
+
+def test_N_신고점이고_돌파했으면_핵심_통과():
+    b = 번들(results=결과행(close=100.0, high_52w=100.0))
+    st = cb_.BaseState("1a차", 95.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert [c.passed for c in r.core] == [True, True]
+
+
+def test_N_신고점_5퍼센트_이내면_핵심1_통과():
+    b = 번들(results=결과행(close=96.0, high_52w=100.0))
+    st = cb_.BaseState("1a차", 90.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert r.core[0].passed is True
+
+
+def test_N_신고점에서_10퍼센트_아래면_핵심1_미통과():
+    b = 번들(results=결과행(close=90.0, high_52w=100.0))
+    st = cb_.BaseState("1a차", 85.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert r.core[0].passed is False
+
+
+def test_N_베이스가_없으면_핵심2_미통과():
+    b = 번들(results=결과행(close=100.0, high_52w=100.0))
+    st = cb_.BaseState("베이스 없음", None, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert r.core[1].passed is False
+
+
+def test_N_베이스_형성중이면_핵심2_미통과():
+    b = 번들(results=결과행(close=90.0, high_52w=100.0))
+    st = cb_.BaseState("2 형성중", 100.0, 92.0, 5, True)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert r.core[1].passed is False
+
+
+def test_N_거래량이_50일평균의_1_4배_이상이면_부가_통과():
+    b = 번들(results=결과행(close=100.0, high_52w=100.0, volume=1_000_000))
+    st = cb_.BaseState("1a차", 95.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 700_000)
+    assert r.bonus[0].passed is True
+
+
+def test_N_평균거래량이_없으면_부가는_미계산():
+    b = 번들(results=결과행(close=100.0, high_52w=100.0))
+    st = cb_.BaseState("1a차", 95.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, None)
+    assert r.bonus[0].passed is None
+
+
+def test_N_종가와_베이스가_모두_없으면_데이터부족():
+    # 베이스 상태가 None인 경우는 가격 이력이 60일 미만이라 계산 자체를 못 한 것이다.
+    # "베이스 없음"(BaseState 객체)은 계산 결과이므로 미통과이지 데이터부족이 아니다.
+    b = 번들(results=결과행(close=None, high_52w=None))
+    r = ci.judge_n("AAA", b, None, None)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_N_베이스_없음은_데이터부족이_아니라_미통과():
+    b = 번들(results=결과행(close=100.0, high_52w=100.0))
+    st = cb_.BaseState("베이스 없음", None, None, 0, False)
+    r = ci.judge_n("AAA", b, st, None)
+    assert r.core[1].passed is False
+    assert r.grade != cs.INSUFFICIENT
+
+
+def test_N_종가가_없으면_부가는_미계산_크래시아님():
+    # breakout_confirmed(close, ...)는 close가 None이면 close > pivot 비교에서
+    # TypeError로 죽는다. 종가는 results.csv, 베이스는 별도 일봉 계산에서 나오므로
+    # 베이스와 평균거래량은 있는데 종가만 없는 조합이 실제로 생길 수 있다. 이 테스트는
+    # judge_n이 breakout_confirmed 호출 전에 close is None을 걸러내는 가드를 고정한다.
+    # 이 가드를 지우면 크래시가 난다.
+    b = 번들(results=결과행(close=None, high_52w=None))
+    st = cb_.BaseState("1a차", 90.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 500_000)
+    assert r.bonus[0].passed is None
+
+
+def test_N_평균거래량이_NaN이면_부가는_미계산():
+    # vol_avg50은 시그니처상 float | None이지만 신규 상장주는 rolling(50).mean()이
+    # NaN을 내놓을 수 있어 None이 아닌 NaN으로 들어올 수 있다. NaN은 truthy라
+    # "vol_avg50 is None" 만으로는 걸러지지 않고 volume/vol_avg50 나눗셈에서
+    # "nan배"가 사유 문자열에 찍힌다. 이 테스트는 pd.isna(vol_avg50) 가드를 고정한다.
+    b = 번들(results=결과행(close=100.0, high_52w=100.0, volume=1_000_000))
+    st = cb_.BaseState("1a차", 95.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, float("nan"))
+    assert r.bonus[0].passed is None
+    assert "nan" not in r.bonus[0].detail.lower()

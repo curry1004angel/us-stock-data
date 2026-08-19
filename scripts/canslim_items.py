@@ -1,6 +1,7 @@
 # CANSLIM 여섯 항목(C·A·N·S·L·I)을 종목 단위로 판정하는 모듈
 import pandas as pd
 
+from canslim_bases import BREAKOUT_VOL_MULT, breakout_confirmed
 from canslim_loaders import QUARTER_ORDER
 from canslim_scoring import Criterion, grade_item
 
@@ -14,6 +15,8 @@ A_YEARS = 3                   # 3판에서 "4~5년"에서 3년으로 단축됨
 A_ROE_MIN = 17.0              # 스펙 5.3 부가요소 1
 A_CF_TO_NI_MIN = 1.2          # 스펙 5.3 부가요소 2
 A_STABILITY_MAX = 0.50        # 스펙 5.3 부가요소 3. 표준편차 ÷ 평균
+
+N_NEAR_HIGH_PCT = 5.0         # 스펙 5.4 핵심요소 1. 52주 신고점 -5% 이내
 
 
 def _rows(b, ticker, account, annual=False):
@@ -198,3 +201,48 @@ def judge_a(ticker, b):
                        f"{cur_est:.2f} -> {next_est:.2f}")
 
     return grade_item("A", [c1, c2], [b1, b2, b3, b4])
+
+
+def _res(b, ticker, col):
+    if ticker not in getattr(b.results, "index", []):
+        return None
+    v = b.results.loc[ticker].get(col)
+    return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+
+def judge_n(ticker, b, base_state, vol_avg50):
+    close, high52 = _res(b, ticker, "close"), _res(b, ticker, "high_52w")
+
+    # 핵심요소 1. 52주 신고점이거나 신고점 -5% 이내
+    if close is None or high52 is None or high52 <= 0:
+        c1 = Criterion(f"52주 신고점 -{N_NEAR_HIGH_PCT:.0f}% 이내", None, "종가 또는 52주 고가 없음")
+    else:
+        gap = (1 - close / high52) * 100
+        c1 = Criterion(f"52주 신고점 -{N_NEAR_HIGH_PCT:.0f}% 이내",
+                       bool(gap <= N_NEAR_HIGH_PCT), f"신고점 대비 -{gap:.1f}%")
+
+    # 핵심요소 2. 횡보(베이스) 이후의 돌파
+    if base_state is None:
+        c2 = Criterion("베이스 돌파", None, "베이스 계산 불가")
+    elif base_state.in_base:
+        c2 = Criterion("베이스 돌파", False, f"{base_state.label} (아직 돌파 전)")
+    elif base_state.pivot is None:
+        c2 = Criterion("베이스 돌파", False, base_state.label)
+    else:
+        c2 = Criterion("베이스 돌파", True, f"{base_state.label}, 피봇 {base_state.pivot:.2f}")
+
+    # 부가요소 1. 돌파일 거래량 >= 50일 평균 × 1.4
+    # vol_avg50은 신규 상장주 등에서 None뿐 아니라 NaN으로도 들어올 수 있어 pd.isna로
+    # 따로 막는다. close는 위에서 이미 None 가능성이 남아있으므로 여기서도 걸러야
+    # breakout_confirmed(close, ...)의 close > pivot 비교가 None으로 죽지 않는다.
+    volume = _res(b, ticker, "volume")
+    pivot = base_state.pivot if base_state else None
+    if (volume is None or vol_avg50 is None or pd.isna(vol_avg50)
+            or pivot is None or close is None):
+        b1 = Criterion(f"돌파 거래량 50일 평균 {BREAKOUT_VOL_MULT}배 이상", None, "거래량 자료 부족")
+    else:
+        ok = breakout_confirmed(close, volume, pivot, vol_avg50)
+        b1 = Criterion(f"돌파 거래량 50일 평균 {BREAKOUT_VOL_MULT}배 이상", ok,
+                       f"{volume / vol_avg50:.2f}배")
+
+    return grade_item("N", [c1, c2], [b1])
