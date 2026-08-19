@@ -18,6 +18,10 @@ A_STABILITY_MAX = 0.50        # 스펙 5.3 부가요소 3. 표준편차 ÷ 평�
 
 N_NEAR_HIGH_PCT = 5.0         # 스펙 5.4 핵심요소 1. 52주 신고점 -5% 이내
 
+S_VOL_SURGE_MULT = 1.5        # 스펙 5.5 핵심요소 1. 50일 평균 대비 급증 배수
+S_DEBT_RATIO_MAX = 0.50       # 부채총계 ÷ 자산총계 상한
+S_INSIDER_MIN = 0.10          # 스펙 5.5 부가요소 3. 경영진 지분 하한
+
 
 def _rows(b, ticker, account, annual=False):
     src = b.annual if annual else b.quarterly
@@ -250,3 +254,55 @@ def judge_n(ticker, b, base_state, vol_avg50):
                        f"{volume / vol_avg50:.2f}배")
 
     return grade_item("N", [c1, c2], [b1])
+
+
+def judge_s(ticker, b, vol_surge_days):
+    # 핵심요소 1. 최근 거래량이 50일 평균 대비 급증한 날이 존재
+    if vol_surge_days is None:
+        c1 = Criterion(f"거래량 50일 평균 {S_VOL_SURGE_MULT}배 급증일 존재", None, "가격 자료 부족")
+    else:
+        c1 = Criterion(f"거래량 50일 평균 {S_VOL_SURGE_MULT}배 급증일 존재",
+                       vol_surge_days >= 1, f"최근 50일 중 {vol_surge_days}일")
+
+    # 부가요소 1. 자산 대비 부채 비율이 낮고 지난 3년간 감소
+    li = _rows(b, ticker, "total_liabilities", annual=True)
+    ta = _rows(b, ticker, "total_assets", annual=True)
+    ratios = []
+    if li is not None and ta is not None:
+        m = li[["year", "amount"]].merge(ta[["year", "amount"]], on="year",
+                                         suffixes=("_li", "_ta")).sort_values("year")
+        m = m[m["amount_ta"] > 0]
+        ratios = (m["amount_li"] / m["amount_ta"]).tolist()[-3:]
+    # NaN은 truthy라 ratios[-1]이 NaN이어도 "<=", "<" 비교는 그냥 False를 내
+    # bool(False and False)로 조용히 "미통과"가 찍힌다(사유에 "nan%"까지 남는다).
+    # any(pd.isna(...))로 먼저 걸러야 미계산으로 간다.
+    if len(ratios) < 2 or any(pd.isna(v) for v in ratios):
+        b1 = Criterion("부채비율이 낮고 감소 중", None, "부채·자산 자료 부족")
+    else:
+        low = ratios[-1] <= S_DEBT_RATIO_MAX
+        falling = ratios[-1] < ratios[0]
+        b1 = Criterion("부채비율이 낮고 감소 중", bool(low and falling),
+                       " -> ".join(f"{v * 100:.0f}%" for v in ratios))
+
+    # 부가요소 2. 자사주 매입. 주식수가 전년 대비 감소
+    yoy = None
+    if ticker in getattr(b.shares, "index", []):
+        v = b.shares.loc[ticker].get("shares_yoy")
+        yoy = None if v is None or pd.isna(v) else float(v)
+    if yoy is None:
+        b2 = Criterion("주식수 전년 대비 감소", None, "주식수 변화율 없음")
+    else:
+        b2 = Criterion("주식수 전년 대비 감소", yoy < 0, f"{yoy:+.2f}%")
+
+    # 부가요소 3. 최고경영진 지분 비중이 큼
+    ins = None
+    if ticker in getattr(b.analyst, "index", []):
+        v = b.analyst.loc[ticker].get("held_pct_insiders")
+        ins = None if v is None or pd.isna(v) else float(v)
+    if ins is None:
+        b3 = Criterion(f"경영진 지분 {S_INSIDER_MIN * 100:.0f}% 이상", None, "지분 자료 없음")
+    else:
+        b3 = Criterion(f"경영진 지분 {S_INSIDER_MIN * 100:.0f}% 이상",
+                       bool(ins >= S_INSIDER_MIN), f"{ins * 100:.1f}%")
+
+    return grade_item("S", [c1], [b1, b2, b3])

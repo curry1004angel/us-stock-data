@@ -397,3 +397,81 @@ def test_N_평균거래량이_0이면_부가는_미계산():
     r = ci.judge_n("AAA", b, st, 0.0)
     assert r.bonus[0].passed is None
     assert "inf" not in r.bonus[0].detail.lower()
+
+
+# ---------- S 항목 ----------
+
+def test_S_거래량_급증일이_있으면_핵심_통과():
+    b = 번들(results=결과행())
+    r = ci.judge_s("AAA", b, 3)
+    assert r.core[0].passed is True
+
+
+def test_S_거래량_급증일이_없으면_핵심_미통과():
+    b = 번들(results=결과행())
+    r = ci.judge_s("AAA", b, 0)
+    assert r.core[0].passed is False
+
+
+def test_S_급증일수를_모르면_데이터부족():
+    b = 번들(results=결과행())
+    r = ci.judge_s("AAA", b, None)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_S_부채비율이_낮고_3년간_감소하면_부가1_통과():
+    b = 번들(results=결과행(), annual={
+        ("AAA", "total_liabilities"): 연간프레임(
+            [(2023, 600.0, None), (2024, 500.0, None), (2025, 400.0, None)], "total_liabilities"),
+        ("AAA", "total_assets"): 연간프레임(
+            [(2023, 1000.0, None), (2024, 1000.0, None), (2025, 1000.0, None)], "total_assets"),
+    })
+    r = ci.judge_s("AAA", b, 2)
+    assert r.bonus[0].passed is True
+
+
+def test_S_부채비율이_늘면_부가1_미통과():
+    b = 번들(results=결과행(), annual={
+        ("AAA", "total_liabilities"): 연간프레임(
+            [(2023, 400.0, None), (2024, 500.0, None), (2025, 600.0, None)], "total_liabilities"),
+        ("AAA", "total_assets"): 연간프레임(
+            [(2023, 1000.0, None), (2024, 1000.0, None), (2025, 1000.0, None)], "total_assets"),
+    })
+    r = ci.judge_s("AAA", b, 2)
+    assert r.bonus[0].passed is False
+
+
+def test_S_최근_부채가_NaN이면_부가1은_미계산():
+    # NaN은 truthy라 단순 비교로는 걸러지지 않는다. 가장 최근 연도의 부채가 NaN이면
+    # ratios[-1]도 NaN이 되고, "NaN <= 0.5"와 "NaN < ratios[0]"이 둘 다 False라
+    # bool(False and False)로 조용히 "미통과"가 찍힌다(사유에 "nan%"까지 남는다).
+    # 이 테스트는 judge_s의 any(pd.isna(v) for v in ratios) 가드를 고정한다.
+    b = 번들(results=결과행(), annual={
+        ("AAA", "total_liabilities"): 연간프레임(
+            [(2023, 600.0, None), (2024, 500.0, None), (2025, float("nan"), None)], "total_liabilities"),
+        ("AAA", "total_assets"): 연간프레임(
+            [(2023, 1000.0, None), (2024, 1000.0, None), (2025, 1000.0, None)], "total_assets"),
+    })
+    r = ci.judge_s("AAA", b, 2)
+    assert r.bonus[0].passed is None
+    assert "nan" not in r.bonus[0].detail.lower()
+
+
+def test_S_주식수가_전년보다_줄면_부가2_통과():
+    shares = pd.DataFrame({"shares_yoy": [-2.0], "float_shares": [1000.0], "market_cap": [1.0]},
+                          index=pd.Index(["AAA"], name="ticker"))
+    r = ci.judge_s("AAA", 번들(results=결과행(), shares=shares), 2)
+    assert r.bonus[1].passed is True
+
+
+def test_S_주식수_변화율이_없으면_부가2는_미계산():
+    shares = pd.DataFrame({"shares_yoy": [None], "float_shares": [1000.0], "market_cap": [1.0]},
+                          index=pd.Index(["AAA"], name="ticker"))
+    r = ci.judge_s("AAA", 번들(results=결과행(), shares=shares), 2)
+    assert r.bonus[1].passed is None
+
+
+def test_S_경영진_지분이_크면_부가3_통과():
+    analyst = pd.DataFrame({"held_pct_insiders": [0.12]}, index=pd.Index(["AAA"], name="ticker"))
+    r = ci.judge_s("AAA", 번들(results=결과행(), analyst=analyst), 2)
+    assert r.bonus[2].passed is True
