@@ -570,3 +570,24 @@ def test_L_조정구간_하락률이_NaN이면_부가2는_미계산():
     r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), (float("nan"), -9.0))
     assert r.bonus[1].passed is None
     assert "nan" not in r.bonus[1].detail.lower()
+
+
+def test_L_자기_RS는_없어도_업종이_알려지면_하드F가_걸리지_않는다():
+    # EEE는 자기 RS가 없다(c1=None). 하지만 같은 업종의 AAA·BBB가 유효한 RS를 갖고
+    # 있어 industry_stats에는 "반도체"가 여전히 잡히므로 known=True다(핵심3의 대상인
+    # ranked 목록에는 EEE 자신의 RS가 없어 빠지지만, 핵심2는 업종 평균만 보므로 계산된다).
+    # 즉 core=[None, True, None]로 core_known이 비지 않아 grade_item의 INSUFFICIENT
+    # 조기 반환을 피해가고 hard_fail 분기까지 실제로 도달한다. hard_fail은
+    # "c1.passed is False"라 None은 걸리지 않아야 하며, 정상 등급(C)이 나와야 한다.
+    # hard_fail을 "not c1.passed"로 바꾸면 None도 참이 되어 이 케이스가 조용히 F로
+    # 떨어진다. 이 테스트가 그 회귀를 고정한다.
+    res = pd.DataFrame({"rs_rating": [None, 95.0, 85.0]},
+                       index=pd.Index(["EEE", "AAA", "BBB"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["EEE", "AAA", "BBB"], "industry": ["반도체"] * 3})
+    b = 번들(results=res, stock_list=sl)
+    ind_stats = ci.industry_stats(res, sl)
+    r = ci.judge_l("EEE", b, ind_stats, None)
+    assert r.core[0].passed is None
+    assert r.core[1].passed is True
+    assert r.core[2].passed is None
+    assert r.grade == "C"
