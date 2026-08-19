@@ -233,11 +233,15 @@ def judge_n(ticker, b, base_state, vol_avg50):
 
     # 부가요소 1. 돌파일 거래량 >= 50일 평균 × 1.4
     # vol_avg50은 신규 상장주 등에서 None뿐 아니라 NaN으로도 들어올 수 있어 pd.isna로
-    # 따로 막는다. close는 위에서 이미 None 가능성이 남아있으므로 여기서도 걸러야
+    # 따로 막는다. 0 이하도 막아야 한다. 거래정지 종목은 50일 내내 거래량이 0일 수
+    # 있는데, volume이 넘파이 실수라 0으로 나눠도 예외가 아니라 inf가 나온다. 그러면
+    # volume >= 0 × 1.4가 참이 되어 거래량 확인 없이 돌파 통과로 둔갑한다.
+    # pd.isna를 먼저 두는 순서가 중요하다. NaN <= 0은 False라 순서가 바뀌면 NaN이 다시 샌다.
+    # close는 위에서 이미 None 가능성이 남아있으므로 여기서도 걸러야
     # breakout_confirmed(close, ...)의 close > pivot 비교가 None으로 죽지 않는다.
     volume = _res(b, ticker, "volume")
     pivot = base_state.pivot if base_state else None
-    if (volume is None or vol_avg50 is None or pd.isna(vol_avg50)
+    if (volume is None or vol_avg50 is None or pd.isna(vol_avg50) or vol_avg50 <= 0
             or pivot is None or close is None):
         b1 = Criterion(f"돌파 거래량 50일 평균 {BREAKOUT_VOL_MULT}배 이상", None, "거래량 자료 부족")
     else:

@@ -385,3 +385,15 @@ def test_N_평균거래량이_NaN이면_부가는_미계산():
     r = ci.judge_n("AAA", b, st, float("nan"))
     assert r.bonus[0].passed is None
     assert "nan" not in r.bonus[0].detail.lower()
+
+
+def test_N_평균거래량이_0이면_부가는_미계산():
+    # 거래정지나 상장폐지 예정 종목은 50일 내내 거래량이 0이라 rolling 평균도 0이 된다.
+    # volume이 넘파이 실수라 0으로 나눠도 ZeroDivisionError가 아니라 inf가 나오고,
+    # breakout_confirmed의 volume >= 0 × 1.4가 무조건 참이 되어 거래량 확인 없이
+    # 돌파 통과(passed=True, 사유 "inf배")로 둔갑한다. 이 테스트가 그 가드를 고정한다.
+    b = 번들(results=결과행(close=100.0, high_52w=100.0, volume=1_000_000))
+    st = cb_.BaseState("1a차", 95.0, None, 0, False)
+    r = ci.judge_n("AAA", b, st, 0.0)
+    assert r.bonus[0].passed is None
+    assert "inf" not in r.bonus[0].detail.lower()
