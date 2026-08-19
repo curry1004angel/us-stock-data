@@ -242,3 +242,46 @@ def test_A_애널리스트_커버가_없으면_부가4는_미계산():
     })
     r = ci.judge_a("AAA", b)
     assert r.bonus[3].passed is None
+
+
+def test_A_마지막_연도_EPS가_NaN이면_핵심1은_미계산():
+    # NaN은 truthy라 first<=0 같은 단순 비교로는 걸러지지 않는다. 이 테스트는
+    # 핵심1의 pd.isna(last) 가드(canslim_items.py:141)를 고정한다. 이 가드를 지우면
+    # cum이 NaN이 되어 "미통과"로, 사유에는 "nan%"가 찍히며 조용히 오판정된다.
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, float("nan"), 45.0)]),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.core[0].passed is None
+    assert "nan" not in r.core[0].detail.lower()
+
+
+def test_A_자본총계가_NaN이면_ROE_부가는_미계산():
+    # NaN은 truthy라 not eq_a["amount"]로는 걸러지지 않는다. 이 테스트는 부가1의
+    # not(eq_a["amount"] and eq_a["amount"] > 0) 가드(canslim_items.py:158-159)를 고정한다.
+    # 이 가드를 지우면 roe가 NaN이 되어 "미통과"로, 사유에는 "nan%"가 찍힌다.
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+        ("AAA", "net_income"): 연간프레임([(2025, 200.0, None)], "net_income"),
+        ("AAA", "total_equity"): 연간프레임([(2025, float("nan"), None)], "total_equity"),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[0].passed is None
+    assert "nan" not in r.bonus[0].detail.lower()
+
+
+def test_A_영업현금흐름이_NaN이면_현금흐름_부가는_미계산():
+    # NaN은 truthy다. 이 테스트는 부가2의 pd.isna(ocf_a["amount"]) 가드
+    # (canslim_items.py:168-169)를 고정한다. 이 가드를 지우면 ratio가 NaN이 되어
+    # "미통과"로, 사유에는 "nan배"가 찍히며 조용히 오판정된다.
+    b = 번들(annual={
+        ("AAA", "eps"): 연간프레임([(2022, 1.0, None), (2023, 1.4, 40.0),
+                                 (2024, 2.0, 42.9), (2025, 2.9, 45.0)]),
+        ("AAA", "net_income"): 연간프레임([(2025, 100.0, None)], "net_income"),
+        ("AAA", "operating_cashflow"): 연간프레임([(2025, float("nan"), None)], "operating_cashflow"),
+    })
+    r = ci.judge_a("AAA", b)
+    assert r.bonus[1].passed is None
+    assert "nan" not in r.bonus[1].detail.lower()
