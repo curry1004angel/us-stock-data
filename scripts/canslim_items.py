@@ -61,10 +61,11 @@ def judge_c(ticker, b, peer_revenue_yoy):
     op_last = None
     if op is not None and len(op):
         op_last = op.sort_values(["year", "quarter"]).to_dict("records")[-1]
-    if ni_cur is None or op_last is None or not op_last["amount"] or op_last["amount"] <= 0:
+    amt = op_last["amount"] if op_last is not None else None
+    if ni_cur is None or amt is None or not (amt and amt > 0):
         c2 = Criterion("일회성 이익 아님", None, "순이익 또는 영업이익 없음")
     else:
-        ratio = ni_cur["amount"] / op_last["amount"]
+        ratio = ni_cur["amount"] / amt
         suspect = ratio > ONE_OFF_MULT
         c2 = Criterion("일회성 이익 아님", not suspect,
                        f"순이익/영업이익 {ratio:.1f}배" + ("  일회성 의심" if suspect else ""))

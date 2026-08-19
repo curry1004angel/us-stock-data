@@ -123,3 +123,16 @@ def test_C_같은업종_강한매출종목이_있으면_부가2_통과():
     }, stock_list=pd.DataFrame({"ticker": ["AAA"], "industry": ["반도체"]}))
     r = ci.judge_c("AAA", b, {"반도체": [30.0, 5.0]})
     assert r.bonus[1].passed is True
+
+
+def test_C_영업이익이_NaN이면_일회성_판정은_미계산():
+    # NaN은 0이나 음수와 달리 truthy라 단순 가드를 그냥 통과한다. 통과하면
+    # ratio가 NaN이 되고 "일회성 아님"으로 조용히 오판정된다.
+    b = 번들(quarterly={
+        ("AAA", "eps"): 분기프레임([(2025, "1Q", 1.0, 10.0), (2026, "1Q", 2.0, 90.0)]),
+        ("AAA", "net_income"): 분기프레임([(2026, "1Q", 400.0, 90.0)]),
+        ("AAA", "operating_profit"): 분기프레임([(2026, "1Q", float("nan"), 10.0)]),
+    })
+    r = ci.judge_c("AAA", b, {})
+    assert r.core[1].passed is None
+    assert "nan" not in r.core[1].detail.lower()
