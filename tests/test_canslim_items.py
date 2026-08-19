@@ -475,3 +475,98 @@ def test_S_경영진_지분이_크면_부가3_통과():
     analyst = pd.DataFrame({"held_pct_insiders": [0.12]}, index=pd.Index(["AAA"], name="ticker"))
     r = ci.judge_s("AAA", 번들(results=결과행(), analyst=analyst), 2)
     assert r.bonus[2].passed is True
+
+
+# ---------- L 항목 ----------
+
+def 업종_결과():
+    res = pd.DataFrame({
+        "close": [10.0, 20.0, 30.0, 40.0],
+        "rs_rating": [95.0, 85.0, 75.0, 30.0],
+    }, index=pd.Index(["AAA", "BBB", "CCC", "DDD"], name="ticker"))
+    sl = pd.DataFrame({
+        "ticker": ["AAA", "BBB", "CCC", "DDD"],
+        "industry": ["반도체", "반도체", "반도체", "유틸리티"],
+    })
+    return res, sl
+
+
+def test_업종통계는_평균RS와_순위를_낸다():
+    res, sl = 업종_결과()
+    st = ci.industry_stats(res, sl)
+    assert st["반도체"]["mean_rs"] == pytest.approx(85.0)
+    assert st["반도체"]["ranked"] == ["AAA", "BBB", "CCC"]
+
+
+def test_L_RS가_70미만이면_즉시_F():
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("DDD", b, ci.industry_stats(res, sl), None)
+    assert r.grade == "F"
+    assert r.coefficient == 0.0
+
+
+def test_L_RS와_업종강도와_업종내순위를_모두_충족하면_핵심_통과():
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert [c.passed for c in r.core] == [True, True, True]
+
+
+def test_L_업종내_4위이하면_핵심3_미통과():
+    res = pd.DataFrame({"rs_rating": [95.0, 94.0, 93.0, 92.0, 91.0]},
+                       index=pd.Index(["A1", "A2", "A3", "A4", "A5"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["A1", "A2", "A3", "A4", "A5"], "industry": ["반도체"] * 5})
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("A4", b, ci.industry_stats(res, sl), None)
+    assert r.core[2].passed is False
+
+
+def test_L_업종이_비어있으면_핵심2와_3은_미계산():
+    res = pd.DataFrame({"rs_rating": [95.0]}, index=pd.Index(["AAA"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["AAA"], "industry": [""]})
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert r.core[1].passed is None
+    assert r.core[2].passed is None
+
+
+def test_L_RS가_80이상이면_부가1_통과():
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert r.bonus[0].passed is True
+
+
+def test_L_조정구간_하락폭이_지수보다_작으면_부가2_통과():
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), (-5.0, -9.0))
+    assert r.bonus[1].passed is True
+
+
+def test_L_조정구간_자료가_없으면_부가2는_미계산():
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert r.bonus[1].passed is None
+
+
+def test_L_RS등급이_없으면_데이터부족():
+    res = pd.DataFrame({"rs_rating": [None]}, index=pd.Index(["AAA"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["AAA"], "industry": [""]})
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_L_조정구간_하락률이_NaN이면_부가2는_미계산():
+    # corr_drawdown은 엔트리포인트가 계산해 넘기는 (종목 하락률, 지수 하락률) 튜플이다.
+    # 가격 이력이 부족하면 튜플 자체가 아니라 안의 값이 NaN으로 들어올 수 있다.
+    # NaN은 truthy라 "stock_dd > index_dd" 비교가 조용히 False를 내고 사유에
+    # "nan%"가 찍히며 미계산이 아니라 미통과로 둔갑한다. 이 테스트가 그 가드를 고정한다.
+    res, sl = 업종_결과()
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), (float("nan"), -9.0))
+    assert r.bonus[1].passed is None
+    assert "nan" not in r.bonus[1].detail.lower()

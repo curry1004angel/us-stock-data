@@ -22,6 +22,14 @@ S_VOL_SURGE_MULT = 1.5        # 스펙 5.5 핵심요소 1. 50일 평균 대비 �
 S_DEBT_RATIO_MAX = 0.50       # 부채총계 ÷ 자산총계 상한
 S_INSIDER_MIN = 0.10          # 스펙 5.5 부가요소 3. 경영진 지분 하한
 
+L_RS_MIN = 70                 # 스펙 5.6 핵심요소 1. 미만은 즉시 F
+L_RS_STRONG = 80              # 스펙 5.6 부가요소 1
+L_INDUSTRY_TOP_PCT = 0.20     # 스펙 5.6 핵심요소 2. 업종 평균 RS 상위 20%
+L_RANK_MAX = 3                # 스펙 5.6 핵심요소 3. 업종 내 3위 이내
+# 한국 레포에서 업종을 못 채운 종목에 넣는 센티널. 업종으로 취급하면 무관한 종목들이
+# 서로 피어가 되어 업종 백분위가 거짓이 된다 (스펙 5.6).
+INDUSTRY_SENTINELS = {"", "(분류 없음)", "-", "nan", "None"}
+
 
 def _rows(b, ticker, account, annual=False):
     src = b.annual if annual else b.quarterly
@@ -306,3 +314,80 @@ def judge_s(ticker, b, vol_surge_days):
                        bool(ins >= S_INSIDER_MIN), f"{ins * 100:.1f}%")
 
     return grade_item("S", [c1], [b1, b2, b3])
+
+
+def industry_stats(results, stock_list):
+    """업종별 평균 RS와 RS 내림차순 티커 목록, 업종 평균 RS의 백분위를 만든다."""
+    if not len(stock_list) or not len(results):
+        return {"_percentile": {}}
+    ind = dict(zip(stock_list["ticker"], stock_list.get("industry", "")))
+    rows = []
+    for tk, rs in results["rs_rating"].items():
+        name = str(ind.get(tk, "")).strip()
+        if name in INDUSTRY_SENTINELS or rs is None or pd.isna(rs):
+            continue
+        rows.append((name, tk, float(rs)))
+    if not rows:
+        return {"_percentile": {}}
+
+    df = pd.DataFrame(rows, columns=["industry", "ticker", "rs"])
+    stats = {}
+    for name, g in df.groupby("industry", sort=False):
+        g = g.sort_values("rs", ascending=False)
+        stats[name] = {"mean_rs": float(g["rs"].mean()), "ranked": g["ticker"].tolist()}
+
+    means = pd.Series({k: v["mean_rs"] for k, v in stats.items()})
+    # 백분위 1.0이 가장 강한 업종이다.
+    stats["_percentile"] = means.rank(pct=True).to_dict()
+    return stats
+
+
+def judge_l(ticker, b, ind_stats, corr_drawdown):
+    rs = _res(b, ticker, "rs_rating")
+
+    if rs is None:
+        c1 = Criterion(f"RS 등급 {L_RS_MIN} 이상", None, "RS 등급 없음")
+    else:
+        c1 = Criterion(f"RS 등급 {L_RS_MIN} 이상", bool(rs >= L_RS_MIN), f"RS {rs:.0f}")
+
+    industry = ""
+    if len(b.stock_list):
+        hit = b.stock_list[b.stock_list["ticker"] == ticker]
+        if len(hit):
+            industry = str(hit.iloc[0].get("industry", "")).strip()
+    known = industry not in INDUSTRY_SENTINELS and industry in ind_stats
+
+    if not known:
+        c2 = Criterion(f"업종 평균 RS 상위 {L_INDUSTRY_TOP_PCT * 100:.0f}%", None, "업종 미상")
+        c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None, "업종 미상")
+    else:
+        pct = ind_stats["_percentile"].get(industry, 0.0)
+        c2 = Criterion(f"업종 평균 RS 상위 {L_INDUSTRY_TOP_PCT * 100:.0f}%",
+                       bool(pct >= 1 - L_INDUSTRY_TOP_PCT),
+                       f"{industry} 상위 {(1 - pct) * 100:.0f}%")
+        ranked = ind_stats[industry]["ranked"]
+        rank = ranked.index(ticker) + 1 if ticker in ranked else None
+        if rank is None:
+            c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None, "업종 순위 계산 불가")
+        else:
+            c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", rank <= L_RANK_MAX,
+                           f"{industry} {rank}/{len(ranked)}위")
+
+    if rs is None:
+        b1 = Criterion(f"RS 등급 {L_RS_STRONG} 이상", None, "RS 등급 없음")
+    else:
+        b1 = Criterion(f"RS 등급 {L_RS_STRONG} 이상", bool(rs >= L_RS_STRONG), f"RS {rs:.0f}")
+
+    # corr_drawdown 자체가 None인 경우 외에, 가격 이력이 짧아 튜플 안의 값만 NaN으로
+    # 들어올 수 있다. NaN은 truthy라 stock_dd > index_dd 비교가 조용히 False를 내고
+    # 사유에 "nan%"가 찍힌다. pd.isna로 먼저 걸러야 미계산으로 간다 (스펙 5.6).
+    if corr_drawdown is None or pd.isna(corr_drawdown[0]) or pd.isna(corr_drawdown[1]):
+        b2 = Criterion("조정 구간 하락폭이 지수보다 작음", None, "조정 구간 자료 없음")
+    else:
+        stock_dd, index_dd = corr_drawdown
+        b2 = Criterion("조정 구간 하락폭이 지수보다 작음", bool(stock_dd > index_dd),
+                       f"종목 {stock_dd:+.1f}% 대 지수 {index_dd:+.1f}%")
+
+    # RS 70 미만은 부진 종목이므로 다른 요소와 무관하게 즉시 F다 (스펙 5.6).
+    hard_fail = c1.passed is False
+    return grade_item("L", [c1, c2, c3], [b1, b2], hard_fail=hard_fail)
