@@ -138,6 +138,19 @@ def test_C_영업이익이_NaN이면_일회성_판정은_미계산():
     assert "nan" not in r.core[1].detail.lower()
 
 
+def test_C_순이익이_NaN이면_일회성_판정은_미계산():
+    # 분모(amt)는 Task 4에서 이미 가드됐다. 이번엔 분자 ni_cur["amount"]가 NaN인
+    # 경우다. 걸러지지 않으면 ratio가 NaN이 되고 "일회성 아님"으로 조용히 통과한다.
+    b = 번들(quarterly={
+        ("AAA", "eps"): 분기프레임([(2025, "1Q", 1.0, 10.0), (2026, "1Q", 2.0, 90.0)]),
+        ("AAA", "net_income"): 분기프레임([(2026, "1Q", float("nan"), 90.0)]),
+        ("AAA", "operating_profit"): 분기프레임([(2026, "1Q", 100.0, 10.0)]),
+    })
+    r = ci.judge_c("AAA", b, {})
+    assert r.core[1].passed is None
+    assert "nan" not in r.core[1].detail.lower()
+
+
 # ---------- A 항목 ----------
 
 def 연간프레임(rows, account="eps"):

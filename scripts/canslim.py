@@ -21,6 +21,11 @@ VOL_SURGE_MULT = 1.5          # S 항목 급증일 판정 배수
 VOL_SURGE_WINDOW = 50         # 급증일을 세는 최근 거래일 수
 DRAWDOWN_WINDOW = 60          # L 부가요소 2. 조정 구간을 찾는 최근 거래일 수
 ITEM_KEYS = ["C", "A", "N", "S", "L", "I"]
+# 실패 종목 비율 임계값. 전량 실패는 빈 DataFrame에서 KeyError로 크게 죽어 오히려
+# 안전하지만, 일부만 실패하면 잘린 CSV가 그대로 쓰이고 커밋되어 어제의 완전한
+# 결과를 조용히 덮어쓴다. 잘린 결과로 좋은 결과를 덮어쓰는 것이 아무것도 안 쓰는
+# 것보다 나쁘다고 보고 이 문턱을 넘으면 CSV를 쓰지 않고 크게 실패시킨다.
+MAX_FAILURE_RATE = 0.05
 
 
 def _price_features(g):
@@ -41,14 +46,19 @@ def _index_drawdown(index_df):
     if index_df is None or len(index_df) < DRAWDOWN_WINDOW:
         return None
     d = index_df.sort_values("date").iloc[-DRAWDOWN_WINDOW:]
+    # 종가가 결측이거나 0 이하인 행이 섞이면 idxmax/idxmin이 전부 NaN인 구간에서
+    # ValueError로 죽거나(이 함수는 종목 루프보다 앞서 돌아 한 종목도 처리하기 전에
+    # 전체 실행을 죽인다) 0을 고점/저점으로 잡아 하락률을 왜곡한다. index_signal과
+    # 동일하게 유효 종가만 남기고 계산한다.
+    d = d[d["close"].notna() & (d["close"] > 0)]
+    if len(d) < 2:
+        return None
     peak_i = d["close"].idxmax()
     after = d.loc[peak_i:]
     if len(after) < 2:
         return None
     trough_i = after["close"].idxmin()
     peak, trough = d.loc[peak_i, "close"], d.loc[trough_i, "close"]
-    if peak <= 0:
-        return None
     return (str(d.loc[peak_i, "date"]), str(d.loc[trough_i, "date"]),
             (trough - peak) / peak * 100)
 
@@ -62,6 +72,20 @@ def _stock_drawdown(g, start, end):
     if first <= 0:
         return None
     return (low - first) / first * 100
+
+
+def _check_failure_rate(n_errors, n_attempted):
+    """실패 종목 비율이 MAX_FAILURE_RATE를 넘으면 예외를 던져 CSV 쓰기 전에 멈춘다.
+    문턱 아래인 나머지는 GitHub Actions 실행 요약에 뜨도록 ::warning:: 한 줄을 남긴다."""
+    if n_errors == 0:
+        return
+    fail_rate = n_errors / n_attempted if n_attempted else 1.0
+    if fail_rate > MAX_FAILURE_RATE:
+        raise RuntimeError(
+            f"CANSLIM 판정 실패율이 임계값을 초과했다: {n_errors}/{n_attempted}종목 "
+            f"({fail_rate:.1%}) 실패, 임계값 {MAX_FAILURE_RATE:.0%}."
+        )
+    print(f"::warning::CANSLIM 판정 실패 {n_errors}종목: 전체 {n_attempted}종목 중 {fail_rate:.1%}.")
 
 
 def main():
@@ -157,8 +181,9 @@ def main():
             # 티커와 예외를 반드시 출력한다.
             errors.append((ticker, f"{type(e).__name__}: {e}"))
 
+    _check_failure_rate(len(errors), len(b.results.index))
     if errors:
-        print(f"경고: {len(errors)}종목에서 예외가 발생해 판정에서 제외됨")
+        print(f"경고: {len(errors)}종목에서 예외가 발생해 판정에서 제외됨.")
         for tk, msg in errors:
             print(f"  {tk}: {msg}")
 

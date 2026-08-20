@@ -87,7 +87,10 @@ def judge_c(ticker, b, peer_revenue_yoy):
     if op is not None and len(op):
         op_last = op.sort_values(["year", "quarter"]).to_dict("records")[-1]
     amt = op_last["amount"] if op_last is not None else None
-    if ni_cur is None or amt is None or not (amt and amt > 0):
+    # amt(분모)는 Task 4에서 가드했으나 ni_cur["amount"](분자)는 안 걸렸다. NaN은
+    # truthy라 걸러지지 않으면 ratio가 NaN이 되고 ratio > ONE_OFF_MULT가 False라
+    # "일회성 아님"으로 조용히 오판정된다 (스펙 5.2).
+    if ni_cur is None or amt is None or not (amt and amt > 0) or pd.isna(ni_cur["amount"]):
         c2 = Criterion("일회성 이익 아님", None, "순이익 또는 영업이익 없음")
     else:
         ratio = ni_cur["amount"] / amt
