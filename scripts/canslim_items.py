@@ -70,6 +70,13 @@ def _period(rec):
     return f"{rec['year']} {rec['quarter']}" if "quarter" in rec else f"{rec['year']}"
 
 
+def _valid_denominator(v):
+    """나눗셈 분모로 쓸 수 있는 값인지 판정한다. `v <= 0` 같은 단순 비교만 쓰면
+    NaN은 모든 비교가 False라 조용히 통과해버리므로(스펙 5.2·5.3) None·NaN·0·음수를
+    한 번에 걸러야 한다."""
+    return v is not None and not pd.isna(v) and v > 0
+
+
 def judge_c(ticker, b, peer_revenue_yoy):
     eps_cur, eps_prev = latest_two_yoy(_rows(b, ticker, "eps"))
 
@@ -90,7 +97,7 @@ def judge_c(ticker, b, peer_revenue_yoy):
     # amt(분모)는 Task 4에서 가드했으나 ni_cur["amount"](분자)는 안 걸렸다. NaN은
     # truthy라 걸러지지 않으면 ratio가 NaN이 되고 ratio > ONE_OFF_MULT가 False라
     # "일회성 아님"으로 조용히 오판정된다 (스펙 5.2).
-    if ni_cur is None or amt is None or not (amt and amt > 0) or pd.isna(ni_cur["amount"]):
+    if ni_cur is None or amt is None or not _valid_denominator(amt) or pd.isna(ni_cur["amount"]):
         c2 = Criterion("일회성 이익 아님", None, "순이익 또는 영업이익 없음")
     else:
         ratio = ni_cur["amount"] / amt
@@ -157,8 +164,8 @@ def judge_a(ticker, b):
     else:
         first, last = window[0]["amount"], window[-1]["amount"]
         # NaN은 truthy라 first<=0 같은 단순 비교로는 걸러지지 않는다. first는
-        # not(x and x>0) 관용구로, last는 pd.isna로 따로 막는다 (스펙 5.3).
-        if not (first and first > 0) or pd.isna(last):
+        # _valid_denominator로, last는 pd.isna로 따로 막는다 (스펙 5.3).
+        if not _valid_denominator(first) or pd.isna(last):
             c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상", None,
                            "기준 연도 EPS가 0 이하이거나 값이 없어 증가율을 낼 수 없다")
         else:
@@ -176,7 +183,7 @@ def judge_a(ticker, b):
     # 부가요소 1. 자기자본이익률 17% 이상
     ni_a, eq_a = _annual_last(b, ticker, "net_income"), _annual_last(b, ticker, "total_equity")
     if (ni_a is None or eq_a is None or pd.isna(ni_a["amount"])
-            or not (eq_a["amount"] and eq_a["amount"] > 0)):
+            or not _valid_denominator(eq_a["amount"])):
         b1 = Criterion(f"자기자본이익률 {A_ROE_MIN:.0f}% 이상", None, "순이익 또는 자본총계 없음")
     else:
         roe = ni_a["amount"] / eq_a["amount"] * 100
@@ -186,7 +193,7 @@ def judge_a(ticker, b):
     # 주식수가 약분되어 영업현금흐름 ÷ 순이익으로 같은 판정이 된다 (스펙 5.3).
     ocf_a = _annual_last(b, ticker, "operating_cashflow")
     if (ni_a is None or ocf_a is None or pd.isna(ocf_a["amount"])
-            or not (ni_a["amount"] and ni_a["amount"] > 0)):
+            or not _valid_denominator(ni_a["amount"])):
         b2 = Criterion(f"영업현금흐름이 순이익의 {A_CF_TO_NI_MIN}배 이상", None,
                        "순이익이 0 이하이거나 현금흐름 없음")
     else:
@@ -225,6 +232,16 @@ def _res(b, ticker, col):
         return None
     v = b.results.loc[ticker].get(col)
     return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+
+def _snapshot_metric(frame, ticker, col):
+    """b.shares·b.analyst처럼 티커당 한 행뿐인 스냅샷 프레임에서 보조 지표를 꺼낸다.
+    _res와 같은 모양(없으면 None, NaN도 None)이되 대상 프레임을 인자로 받아
+    여러 스냅샷 프레임에 재사용하고, 있는 값은 float으로 맞춘다."""
+    if ticker not in getattr(frame, "index", []):
+        return None
+    v = frame.loc[ticker].get(col)
+    return None if v is None or pd.isna(v) else float(v)
 
 
 def judge_n(ticker, b, base_state, vol_avg50):
@@ -298,20 +315,14 @@ def judge_s(ticker, b, vol_surge_days):
                        " -> ".join(f"{v * 100:.0f}%" for v in ratios))
 
     # 부가요소 2. 자사주 매입. 주식수가 전년 대비 감소
-    yoy = None
-    if ticker in getattr(b.shares, "index", []):
-        v = b.shares.loc[ticker].get("shares_yoy")
-        yoy = None if v is None or pd.isna(v) else float(v)
+    yoy = _snapshot_metric(b.shares, ticker, "shares_yoy")
     if yoy is None:
         b2 = Criterion("주식수 전년 대비 감소", None, "주식수 변화율 없음")
     else:
         b2 = Criterion("주식수 전년 대비 감소", yoy < 0, f"{yoy:+.2f}%")
 
     # 부가요소 3. 최고경영진 지분 비중이 큼
-    ins = None
-    if ticker in getattr(b.analyst, "index", []):
-        v = b.analyst.loc[ticker].get("held_pct_insiders")
-        ins = None if v is None or pd.isna(v) else float(v)
+    ins = _snapshot_metric(b.analyst, ticker, "held_pct_insiders")
     if ins is None:
         b3 = Criterion(f"경영진 지분 {S_INSIDER_MIN * 100:.0f}% 이상", None, "지분 자료 없음")
     else:
@@ -422,9 +433,8 @@ def judge_i_us(ticker, b):
 
     # 부가요소 1. 기관 비중이 과도하지 않음
     held = series[-1][1] if series else None
-    if held is None and ticker in getattr(b.analyst, "index", []):
-        v = b.analyst.loc[ticker].get("held_pct_institutions")
-        held = None if v is None or pd.isna(v) else float(v)
+    if held is None:
+        held = _snapshot_metric(b.analyst, ticker, "held_pct_institutions")
     if held is None:
         b1 = Criterion(f"기관 비중 {I_HELD_MAX * 100:.0f}% 미만", None, "기관 비중 없음")
     else:
