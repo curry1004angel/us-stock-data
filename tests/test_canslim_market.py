@@ -104,7 +104,7 @@ def test_거래량이_전부_0이면_분산일은_0이_아니라_None():
     vols = [0] * 275
     s = cm.index_signal(지수(closes, vols))
     assert s["distribution_days"] is None
-    assert s["stall_days"] == []
+    assert s["stall_days"] is None
 
 
 def test_최근창에_거래량_결측일이_하루만_섞여도_분산일은_None():
@@ -160,6 +160,42 @@ def test_한_지수가_완전히_비어도_시장신호는_나머지로_계산�
     out = cm.market_signal({"US500": up, "IXIC": empty})
     assert set(out["per_index"]) == {"US500"}
     assert out["signal"] == "공격"
+
+
+def test_거래량이_정상이면_고점신호_없는_지수는_셀_수_없음이_아니라_빈_리스트():
+    # 분산일과 달리 고점신호는 브리프 테스트에서 이미 "1일"인 경우만 검증됐다.
+    # "정상적으로 셌는데 0건"인 경우도 None과 구분되게 빈 리스트로 나와야 한다.
+    s = cm.index_signal(상승지수())
+    assert s["stall_days"] == []
+
+
+def test_거래량을_셀_수_없으면_고점신호도_빈_리스트가_아니라_None():
+    closes = [100 + i * 0.3 for i in range(275)]
+    vols = [0] * 275
+    s = cm.index_signal(지수(closes, vols))
+    assert s["stall_days"] is None
+
+
+def test_마지막_날_종가가_결측이면_해당_지수_필드가_전부_None():
+    closes = [100 + i * 0.3 for i in range(300)]
+    closes[-1] = float("nan")
+    s = cm.index_signal(지수(closes))
+    assert s["close"] is None
+    assert s["change_pct"] is None
+    assert s["above_ma50"] is None
+    assert s["above_ma200"] is None
+
+
+def test_마지막_날_종가가_0이면_이평선_아래로_오판정하지_않는다():
+    # 종가 0은 결측과 달리 이동평균 계산에서 NaN으로 전파되지 않아 above_ma50=False,
+    # change_pct=-100%라는 그럴듯하지만 거짓인 값을 만든다. None으로 막아야 한다.
+    closes = [100 + i * 0.3 for i in range(300)]
+    closes[-1] = 0.0
+    s = cm.index_signal(지수(closes))
+    assert s["close"] is None
+    assert s["change_pct"] is None
+    assert s["above_ma50"] is None
+    assert s["above_ma200"] is None
 
 
 def test_분산일이_다른_두_지수는_평균이_아니라_최댓값을_따른다():

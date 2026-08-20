@@ -22,8 +22,17 @@ def index_signal(df):
     vol_avg50 = vol.rolling(50).mean()
 
     last = len(d) - 1
-    above_ma50 = bool(close.iloc[last] > ma50.iloc[last]) if not pd.isna(ma50.iloc[last]) else None
-    above_ma200 = bool(close.iloc[last] > ma200.iloc[last]) if not pd.isna(ma200.iloc[last]) else None
+    last_close = close.iloc[last]
+    # 종가가 결측이거나 0 이하이면 그날 값을 신뢰할 수 없다. 지수 로딩 경로(canslim_loaders.py)는
+    # 개별 종목 가격(prices)과 달리 양수 필터가 없어 이런 값이 그대로 들어올 수 있다.
+    # 0은 이동평균 계산에서 NaN처럼 전파되지 않아 above_ma50=False, change_pct=-100%처럼
+    # 그럴듯하지만 거짓인 값을 만들므로 별도로 걸러야 한다.
+    last_close_valid = not pd.isna(last_close) and last_close > 0
+
+    above_ma50 = (bool(last_close > ma50.iloc[last])
+                  if last_close_valid and not pd.isna(ma50.iloc[last]) else None)
+    above_ma200 = (bool(last_close > ma200.iloc[last])
+                   if last_close_valid and not pd.isna(ma200.iloc[last]) else None)
     prev200 = ma200.shift(MA200_TREND_DAYS).iloc[last]
     ma200_rising = (bool(ma200.iloc[last] > prev200)
                     if not (pd.isna(ma200.iloc[last]) or pd.isna(prev200)) else None)
@@ -46,16 +55,18 @@ def index_signal(df):
         stall_days = window.loc[is_stall.iloc[-DIST_WINDOW:].fillna(False), "date"].tolist()
     else:
         dist_days = None
-        stall_days = []
+        # 분산일과 같은 이유로 고점신호도 0건("고점신호 없음")과 셀 수 없음을 구분해야 한다.
+        stall_days = None
 
     return {
-        "close": float(close.iloc[last]),
-        "change_pct": None if pd.isna(change.iloc[last]) else round(float(change.iloc[last]), 2),
+        "close": float(last_close) if last_close_valid else None,
+        "change_pct": (None if not last_close_valid or pd.isna(change.iloc[last])
+                       else round(float(change.iloc[last]), 2)),
         "above_ma50": above_ma50,
         "above_ma200": above_ma200,
         "ma200_rising": ma200_rising,
         "distribution_days": dist_days,
-        "stall_days": [str(x) for x in stall_days],
+        "stall_days": None if stall_days is None else [str(x) for x in stall_days],
     }
 
 
