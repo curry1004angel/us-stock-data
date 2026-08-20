@@ -590,17 +590,21 @@ def test_L_조정구간_하락률이_NaN이면_부가2는_미계산():
 
 
 def test_L_자기_RS는_없어도_업종이_알려지면_하드F가_걸리지_않는다():
-    # EEE는 자기 RS가 없다(c1=None). 하지만 같은 업종의 AAA·BBB가 유효한 RS를 갖고
-    # 있어 industry_stats에는 "반도체"가 여전히 잡히므로 known=True다(핵심3의 대상인
-    # ranked 목록에는 EEE 자신의 RS가 없어 빠지지만, 핵심2는 업종 평균만 보므로 계산된다).
+    # EEE는 자기 RS가 없다(c1=None). 업종에 RS 보유 종목을 L_MIN_INDUSTRY_SIZE(5)
+    # 이상 둬서 최소 규모 게이트를 먼저 넘기게 한다 — 3종목이면 게이트가 먼저 걸려
+    # 핵심3이 "업종 순위 계산 불가"가 아니라 "RS 보유 부족"으로 미계산되어 이
+    # 테스트가 겨냥하는 분기(ticker not in ranked)를 타지 않는다. 게이트를 넘긴
+    # 뒤에도 EEE 자신은 RS가 없어 ranked 목록에 없으므로(핵심2는 업종 평균만 보니
+    # 계산되지만) 핵심3이 "업종 순위 계산 불가"로 미계산된다.
     # 즉 core=[None, True, None]로 core_known이 비지 않아 grade_item의 INSUFFICIENT
     # 조기 반환을 피해가고 hard_fail 분기까지 실제로 도달한다. hard_fail은
     # "c1.passed is False"라 None은 걸리지 않아야 하며, 정상 등급(C)이 나와야 한다.
     # hard_fail을 "not c1.passed"로 바꾸면 None도 참이 되어 이 케이스가 조용히 F로
     # 떨어진다. 이 테스트가 그 회귀를 고정한다.
-    res = pd.DataFrame({"rs_rating": [None, 95.0, 85.0]},
-                       index=pd.Index(["EEE", "AAA", "BBB"], name="ticker"))
-    sl = pd.DataFrame({"ticker": ["EEE", "AAA", "BBB"], "industry": ["반도체"] * 3})
+    res = pd.DataFrame({"rs_rating": [None, 95.0, 85.0, 75.0, 65.0, 55.0]},
+                       index=pd.Index(["EEE", "AAA", "BBB", "CCC", "FFF", "GGG"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["EEE", "AAA", "BBB", "CCC", "FFF", "GGG"],
+                       "industry": ["반도체"] * 6})
     b = 번들(results=res, stock_list=sl)
     ind_stats = ci.industry_stats(res, sl)
     r = ci.judge_l("EEE", b, ind_stats, None)
@@ -764,6 +768,37 @@ def test_I_KR_금액이_NaN이면_미계산():
     assert "nan" not in r.core[0].detail.lower()
 
 
+def test_I_KR_금액이_inf면_미계산():
+    # pd.isna(inf)는 False라 NaN 가드를 그냥 통과한다. inf가 합에 섞이면
+    # total > 0이 조용히 True로 굳고 사유 문자열에도 "inf"가 그대로 샌다
+    # (결함 부류 3, NaN 가드와 같은 이유로 유한한 값만 받아야 한다).
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", float("inf")), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.core[0].passed is None
+    assert "inf" not in r.core[0].detail.lower()
+
+
+def test_I_KR_asof가_역순으로_쌓여도_최신_스냅샷_금액을_쓴다():
+    # 프레임 행 순서가 아니라 asof 값으로 "최신"을 가려야 한다. 오래된 asof 행이
+    # 프레임에서 더 뒤에 오면(=정렬 없는 iloc[-1]이 집는 위치) 오래된 값을 최신으로
+    # 오판정한다 (judge_i_us의 asof 정렬과 같은 이유, 스펙 5.7).
+    flows = pd.DataFrame([
+        {"ticker": "AAA", "asof": "20260816", "window": 60, "investor": "기관합계", "amount": 1.0e11},
+        {"ticker": "AAA", "asof": "20260801", "window": 60, "investor": "기관합계", "amount": -3.0e11},
+        {"ticker": "AAA", "asof": "20260816", "window": 60, "investor": "외국인", "amount": 8.0e10},
+        {"ticker": "AAA", "asof": "20260801", "window": 60, "investor": "외국인", "amount": -2.0e10},
+        {"ticker": "AAA", "asof": "20260816", "window": 20, "investor": "기관합계", "amount": 5.0e10},
+        {"ticker": "AAA", "asof": "20260816", "window": 20, "investor": "외국인", "amount": 1.0e10},
+    ])
+    b = 번들(flows=flows)
+    r = ci.judge_i_kr("AAA", b)
+    assert r.core[0].passed is True
+    assert "+1,800억원" in r.core[0].detail
+
+
 def test_I_KR_수급이_아예_없으면_데이터부족():
     r = ci.judge_i_kr("AAA", 번들())
     assert r.grade == cs.INSUFFICIENT
@@ -776,6 +811,26 @@ def test_I_KR_다른_종목_수급만_있으면_데이터부족():
     ], ticker="BBB"))
     r = ci.judge_i_kr("AAA", b)
     assert r.grade == cs.INSUFFICIENT
+
+
+def test_I_KR_기관비중이_90퍼센트_미만이면_부가_통과():
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ]), analyst=pd.DataFrame({"held_pct_institutions": [0.65]},
+                             index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.bonus[0].passed is True
+
+
+def test_I_KR_기관비중이_과도하면_부가_미통과():
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ]), analyst=pd.DataFrame({"held_pct_institutions": [0.95]},
+                             index=pd.Index(["AAA"], name="ticker")))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.bonus[0].passed is False
 
 
 # ---------- L 항목 업종 최소 규모 ----------

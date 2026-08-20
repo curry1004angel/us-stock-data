@@ -391,8 +391,11 @@ def judge_l(ticker, b, ind_stats, corr_drawdown):
                        f"{industry} 상위 {(1 - pct) * 100:.0f}%")
         ranked = ind_stats[industry]["ranked"]
         if len(ranked) < L_MIN_INDUSTRY_SIZE:
+            # len(ranked)는 업종 상장 종목 수가 아니라 그중 RS를 보유한 종목 수다
+            # (industry_stats가 RS 없는·NaN 종목을 건너뛴다). "RS 보유"를 명시하지
+            # 않으면 업종 자체가 작다는 뜻으로 잘못 읽힌다.
             c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None,
-                           f"{industry} {len(ranked)}종목 "
+                           f"{industry} RS 보유 {len(ranked)}종목 "
                            f"(순위 판정에 최소 {L_MIN_INDUSTRY_SIZE}종목 필요)")
         else:
             rank = ranked.index(ticker) + 1 if ticker in ranked else None
@@ -472,8 +475,15 @@ def _flow_sum(flows, ticker, window):
         hit = f[f["investor"] == investor]
         if not len(hit):
             return None
-        v = hit["amount"].iloc[-1]
-        if v is None or pd.isna(v):
+        # asof 오름차순 정렬 후 마지막 값을 집는다. 정렬 없이 iloc[-1]을 쓰면
+        # "가장 최근 asof"가 아니라 "프레임 행 순서상 마지막"을 집어, 같은
+        # (종목·기간·투자자)에 스냅샷이 여러 개 쌓이면 더 오래된 값이 최신으로
+        # 오판정될 수 있다 (judge_i_us의 asof 정렬과 같은 이유, 스펙 5.7).
+        v = hit.sort_values("asof")["amount"].iloc[-1]
+        # pd.isna는 NaN만 걸러낸다. inf는 NaN이 아니라서 그대로 통과하면 total이
+        # inf가 되고 total > 0이 조용히 True로 굳어 사유 문자열에도 "inf"가 샌다
+        # (결함 부류 3). 유한한 값만 합에 더한다.
+        if v is None or pd.isna(v) or v in (float("inf"), float("-inf")):
             return None
         total += float(v)
     return total
