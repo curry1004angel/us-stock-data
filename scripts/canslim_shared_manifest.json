@@ -1,0 +1,9 @@
+{
+  "설명": "두 데이터 레포(allstock·us-stock-data)가 바이트 단위로 동일하게 유지하는 판정 모듈의 SHA256. 공유 파일을 의도적으로 고쳤다면 양쪽 레포의 이 파일을 같이 갱신해야 한다.",
+  "files": {
+    "canslim_scoring.py": "5a3ca4b6390562ce838cd715b83d036bcaa8ca215f8365d145ebbe08b9d30fde",
+    "canslim_bases.py": "ee2b3f49e143bb66f92e62cbb8820700b5bc7f1dfdd1dd9ba80add4302ff10e6",
+    "canslim_items.py": "92e0e7054b78bdcb82274cd06c772c69d08d357ec6b4ab32ef95ca5785fdfd1d",
+    "canslim_market.py": "fb5e1a130193803f9494f669bd4692e8a05236412a3c43571d97a02b058f5e92"
+  }
+}
