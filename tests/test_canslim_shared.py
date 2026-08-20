@@ -37,13 +37,18 @@ def test_매니페스트에_네_파일이_모두_있다():
 
 
 def test_공유_파일이_매니페스트와_일치한다():
-    # 이 테스트가 실패하면 공유 판정 파일이 다른 레포와 갈라졌거나, 의도적으로 고친 뒤
-    # 매니페스트를 갱신하지 않은 것이다. 어느 쪽이든 두 레포를 같이 봐야 한다.
+    # 이 테스트가 실패하는 원인은 셋이다. (1) 공유 판정 파일이 다른 레포와 갈라졌다.
+    # (2) 의도적으로 고친 뒤 매니페스트를 갱신하지 않았다. (3) 체크아웃 시 줄바꿈이
+    # 바뀌었다. file_digest는 워킹트리 바이트를 그대로 해시하므로 CRLF와 LF가 섞이면
+    # 내용이 같아도 해시가 달라진다. 네 파일이 한꺼번에 다 어긋난다면 (1)이나 (2)가
+    # 아니라 (3)을 먼저 의심한다. 내용 드리프트가 네 파일에서 동시에 일어날 가능성은
+    # 낮지만, 줄바꿈 환경이 바뀌면 네 파일 모두가 한 번에 영향을 받기 때문이다.
+    # 어느 원인이든 두 레포를 같이 봐야 한다.
     problems = sh.check_drift(SCRIPTS, MANIFEST)
     assert problems == [], "\n".join(problems)
 
 
-def test_파일이_없으면_문제로_보고한다(tmp_path):
+def test_매니페스트에_항목이_없으면_문제로_보고한다(tmp_path):
     (tmp_path / "canslim_scoring.py").write_text("x=1\n", encoding="utf-8")
     manifest = tmp_path / "m.json"
     manifest.write_text(
@@ -51,4 +56,27 @@ def test_파일이_없으면_문제로_보고한다(tmp_path):
         encoding="utf-8",
     )
     problems = sh.check_drift(tmp_path, manifest)
-    assert any("canslim_bases.py" in p for p in problems)
+    matches = [p for p in problems if "canslim_bases.py" in p]
+    assert matches, problems
+    assert "매니페스트에 항목이 없다" in matches[0]
+    assert "파일이 없다" not in matches[0]
+
+
+def test_디스크에_파일이_없으면_파일이_없다로_보고한다(tmp_path):
+    scoring = tmp_path / "canslim_scoring.py"
+    scoring.write_text("x=1\n", encoding="utf-8")
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        '{"files": {'
+        '"canslim_scoring.py": "%s", '
+        '"canslim_bases.py": "%s", '
+        '"canslim_items.py": "%s", '
+        '"canslim_market.py": "%s"'
+        '}}' % (sh.file_digest(scoring), "0" * 64, "0" * 64, "0" * 64),
+        encoding="utf-8",
+    )
+    problems = sh.check_drift(tmp_path, manifest)
+    matches = [p for p in problems if "canslim_bases.py" in p]
+    assert matches, problems
+    assert "파일이 없다" in matches[0]
+    assert "매니페스트에 항목이 없다" not in matches[0]
