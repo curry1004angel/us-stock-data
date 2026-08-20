@@ -20,7 +20,8 @@ def 분기프레임(rows):
 
 
 def 번들(quarterly=None, annual=None, results=None, shares=None,
-        analyst=None, inst=None, prices=None, indices=None, stock_list=None):
+        analyst=None, inst=None, prices=None, indices=None, stock_list=None,
+        flows=None):
     return cl.Bundle(
         results=results if results is not None else pd.DataFrame().set_index(pd.Index([], name="ticker")),
         stock_list=stock_list if stock_list is not None else pd.DataFrame(columns=["ticker", "industry"]),
@@ -29,6 +30,7 @@ def 번들(quarterly=None, annual=None, results=None, shares=None,
         shares=shares if shares is not None else pd.DataFrame(),
         analyst=analyst if analyst is not None else pd.DataFrame(),
         inst_history=inst if inst is not None else pd.DataFrame(),
+        flows=flows if flows is not None else pd.DataFrame(),
         indices=indices or {},
     )
 
@@ -493,13 +495,15 @@ def test_S_경영진_지분이_크면_부가3_통과():
 # ---------- L 항목 ----------
 
 def 업종_결과():
+    # 반도체를 5종목으로 둔다. L_MIN_INDUSTRY_SIZE(5) 미만이면 핵심요소 3이 미계산으로
+    # 빠져 이 파일의 "핵심 통과" 테스트들이 성립하지 않는다. 3종목으로 줄이지 말 것.
     res = pd.DataFrame({
-        "close": [10.0, 20.0, 30.0, 40.0],
-        "rs_rating": [95.0, 85.0, 75.0, 30.0],
-    }, index=pd.Index(["AAA", "BBB", "CCC", "DDD"], name="ticker"))
+        "close": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        "rs_rating": [95.0, 85.0, 75.0, 30.0, 90.0, 80.0],
+    }, index=pd.Index(["AAA", "BBB", "CCC", "DDD", "MMM", "NNN"], name="ticker"))
     sl = pd.DataFrame({
-        "ticker": ["AAA", "BBB", "CCC", "DDD"],
-        "industry": ["반도체", "반도체", "반도체", "유틸리티"],
+        "ticker": ["AAA", "BBB", "CCC", "DDD", "MMM", "NNN"],
+        "industry": ["반도체", "반도체", "반도체", "유틸리티", "반도체", "반도체"],
     })
     return res, sl
 
@@ -508,7 +512,7 @@ def test_업종통계는_평균RS와_순위를_낸다():
     res, sl = 업종_결과()
     st = ci.industry_stats(res, sl)
     assert st["반도체"]["mean_rs"] == pytest.approx(85.0)
-    assert st["반도체"]["ranked"] == ["AAA", "BBB", "CCC"]
+    assert st["반도체"]["ranked"] == ["AAA", "MMM", "BBB", "NNN", "CCC"]
 
 
 def test_L_RS가_70미만이면_즉시_F():
@@ -688,3 +692,113 @@ def test_I_같은_asof가_중복되면_한_스냅샷으로_취급되어_데이�
                                  index=pd.Index(["AAA"], name="ticker")))
     r = ci.judge_i_us("AAA", b)
     assert r.grade == cs.INSUFFICIENT
+
+
+# ---------- I 항목 (한국) ----------
+
+def 수급프레임(rows, ticker="AAA"):
+    # rows = [(window, investor, amount)]
+    return pd.DataFrame(
+        [{"ticker": ticker, "asof": "20260816", "window": w, "investor": i, "amount": a}
+         for w, i, a in rows]
+    )
+
+
+def test_I_KR_기관과_외국인_합이_양수면_핵심_통과():
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert [c.passed for c in r.core] == [True, True]
+
+
+def test_I_KR_기관이_팔아도_외국인_매수가_크면_통과():
+    # 스펙 5.7의 "기관+외국인"은 두 투자자의 합이다. 각각 양수여야 한다는 뜻이 아니다.
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", -1.0e11), (60, "외국인", 3.0e11),
+        (20, "기관합계", -5.0e10), (20, "외국인", 6.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert [c.passed for c in r.core] == [True, True]
+
+
+def test_I_KR_합이_음수면_미통과():
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", -3.0e11), (60, "외국인", 1.0e11),
+        (20, "기관합계", -5.0e10), (20, "외국인", 1.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert [c.passed for c in r.core] == [False, False]
+
+
+def test_I_KR_합이_정확히_0이면_미통과():
+    # 0은 결측이 아니라 실제 순매수 0이다. 미계산이 아니라 미통과여야 한다.
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", -1.0e11),
+        (20, "기관합계", 0.0), (20, "외국인", 0.0),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert [c.passed for c in r.core] == [False, False]
+
+
+def test_I_KR_투자자_한쪽이_없으면_그_기간은_미계산():
+    # 외국인 행이 없으면 합을 낼 수 없다. 기관 금액만으로 판정하면 안 된다.
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.core[0].passed is True
+    assert r.core[1].passed is None
+
+
+def test_I_KR_금액이_NaN이면_미계산():
+    # NaN은 truthy라 total > 0 비교가 조용히 False를 내고 미통과로 둔갑한다.
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", float("nan")), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ]))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.core[0].passed is None
+    assert "nan" not in r.core[0].detail.lower()
+
+
+def test_I_KR_수급이_아예_없으면_데이터부족():
+    r = ci.judge_i_kr("AAA", 번들())
+    assert r.grade == cs.INSUFFICIENT
+
+
+def test_I_KR_다른_종목_수급만_있으면_데이터부족():
+    b = 번들(flows=수급프레임([
+        (60, "기관합계", 1.0e11), (60, "외국인", 2.0e11),
+        (20, "기관합계", 5.0e10), (20, "외국인", 1.0e10),
+    ], ticker="BBB"))
+    r = ci.judge_i_kr("AAA", b)
+    assert r.grade == cs.INSUFFICIENT
+
+
+# ---------- L 항목 업종 최소 규모 ----------
+
+def test_L_업종_종목수가_최소치_미만이면_핵심3은_미계산():
+    # 3종목 업종에서 "3위 이내"는 전원 통과라 무의미하다. 통과로 두면 없는 변별력을
+    # 있는 것처럼 보이게 하므로 미계산으로 보낸다 (스펙 3.2).
+    res = pd.DataFrame({"rs_rating": [95.0, 85.0, 75.0]},
+                       index=pd.Index(["AAA", "BBB", "CCC"], name="ticker"))
+    sl = pd.DataFrame({"ticker": ["AAA", "BBB", "CCC"], "industry": ["소형업종"] * 3})
+    b = 번들(results=res, stock_list=sl)
+    r = ci.judge_l("AAA", b, ci.industry_stats(res, sl), None)
+    assert r.core[2].passed is None
+    assert "3종목" in r.core[2].detail
+
+
+def test_L_업종_종목수가_최소치_이상이면_핵심3이_계산된다():
+    n = ci.L_MIN_INDUSTRY_SIZE
+    tickers = [f"T{i:02d}" for i in range(n)]
+    res = pd.DataFrame({"rs_rating": [99.0 - i for i in range(n)]},
+                       index=pd.Index(tickers, name="ticker"))
+    sl = pd.DataFrame({"ticker": tickers, "industry": ["보통업종"] * n})
+    b = 번들(results=res, stock_list=sl)
+    stats = ci.industry_stats(res, sl)
+    assert ci.judge_l(tickers[0], b, stats, None).core[2].passed is True
+    assert ci.judge_l(tickers[-1], b, stats, None).core[2].passed is False

@@ -24,6 +24,9 @@ class Bundle:
     shares: pd.DataFrame = field(default_factory=pd.DataFrame)
     analyst: pd.DataFrame = field(default_factory=pd.DataFrame)
     inst_history: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # 한국 수급 데이터. 미국에서는 늘 비어 있지만 canslim_items.py를 두 레포에서
+    # 동일하게 유지하려면 judge_i_kr이 읽는 필드가 양쪽 Bundle에 다 있어야 한다.
+    flows: pd.DataFrame = field(default_factory=pd.DataFrame)
     indices: dict = field(default_factory=dict)
 
 
