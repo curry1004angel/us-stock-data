@@ -21,6 +21,23 @@ def 일봉(n):
     })
 
 
+def 이상적인_stage2(n):
+    """detect_base의 Stage2 조건을 마지막 행에서 전부 만족하는 합성 일봉.
+
+    단조 상승이라 c > ma50 > ma150 > ma200이고 ma200도 오른다. 총 상승폭이 25%를
+    한참 넘어 c >= low52 * 1.25를 만족하고, 신고가 근처라 c >= high52 * 0.75도 만족한다.
+    """
+    close = [100.0 * (1.004 ** i) for i in range(n)]
+    return pd.DataFrame({
+        "date": pd.date_range("2026-01-01", periods=n, freq="D"),
+        "ticker": ["005930"] * n,
+        "high": [p * 1.01 for p in close],
+        "low": [p * 0.99 for p in close],
+        "close": close,
+        "volume": [1000.0] * n,
+    })
+
+
 def test_문턱_미만이면_자료부족_라벨이_나온다():
     # 짧은 시계열에서는 rolling(252) 구간이 전부 NaN이라 detect_base가 늘
     # "Stage2 아님"을 돌려준다. 그건 판정이 아니라 거짓이다. 진실은 "알 수 없다"다.
@@ -30,6 +47,21 @@ def test_문턱_미만이면_자료부족_라벨이_나온다():
 def test_문턱_이상이면_실제_판정_라벨이_나온다():
     # 가드가 과하게 걸려 정상 종목까지 "자료 부족"으로 보내면 안 된다.
     assert cb.base_label(일봉(cl.MIN_BASE_ROWS)) != cl.BASE_INSUFFICIENT_LABEL
+
+
+def test_문턱이_stage2를_실제로_알아볼_만큼_길다():
+    # 위 테스트는 가드가 발동하는지만 보지 문턱이 충분한지는 안 본다. 문턱이 짧으면
+    # detect_base가 rolling(252) 구간을 전부 NaN으로 받고 stage2.fillna(False)가
+    # 그것을 False로 접어, 완벽한 상승추세에도 "Stage2 아님"을 돌려준다. 그 라벨은
+    # judge_n에서 미계산이 아니라 핵심요소 2 False가 되어 등급을 실제로 떨어뜨린다.
+    #
+    # 이상적인 Stage2 일봉을 정확히 문턱 길이만큼 만들어, 그 길이에서 detect_base가
+    # Stage2를 알아보는지 고정한다. 문턱이 252 미만이면 이 테스트가 죽는다.
+    라벨 = cb.base_label(이상적인_stage2(cl.MIN_BASE_ROWS))
+    assert 라벨 != "Stage2 아님", (
+        f"문턱 {cl.MIN_BASE_ROWS}행에서는 완벽한 상승추세도 Stage2로 안 보인다. "
+        f"detect_base의 rolling(252)를 채우지 못한다는 뜻이다 (관측 라벨: {라벨}).")
+    assert 라벨 != cl.BASE_INSUFFICIENT_LABEL
 
 
 def test_두_스크립트가_문턱을_공유_상수로_읽는다():
