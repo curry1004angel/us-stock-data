@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from canslim_bases import base_status, buy_range, detect_base
 from canslim_items import (industry_stats, judge_a, judge_c, judge_i_us, judge_l,
                            judge_n, judge_s, INDUSTRY_SENTINELS)
-from canslim_loaders import load_all
+from canslim_loaders import BASE_INSUFFICIENT_LABEL, MIN_BASE_ROWS, load_all
 from canslim_market import market_signal
 from canslim_scoring import total_score
 
@@ -125,7 +125,17 @@ def main():
         try:
             g = price_groups.get(ticker)
             vol_avg50, surge_days = _price_features(g) if g is not None else (None, None)
-            base = detect_base(g) if g is not None and len(g) >= 60 else None
+            base = detect_base(g) if g is not None and len(g) >= MIN_BASE_ROWS else None
+            # 라벨을 세 경우로 나눈다. 판정했으면 그 라벨, 일봉이 짧아 판정을 안 했으면
+            # "자료 부족", 가격 데이터가 아예 없으면 "-". 뒤 두 경우를 같은 기호로
+            # 뭉개면 "자료가 없다"와 "자료가 짧다"를 되짚을 수 없다. compute_bases.py도
+            # 같은 상수를 써서 results.csv에 같은 라벨을 넣는다.
+            if base is not None:
+                label = base.label
+            elif g is None:
+                label = "-"
+            else:
+                label = BASE_INSUFFICIENT_LABEL
 
             corr = None
             if dd and g is not None:
@@ -161,7 +171,7 @@ def main():
                 "insufficient": ",".join(agg["insufficient"]),
                 "rs_rating": b.results.loc[ticker].get("rs_rating"),
                 "close": close,
-                "base_label": base.label if base else "-",
+                "base_label": label,
                 "pivot": round(pivot, 4) if pivot else None,
                 "buy_low": round(br[0], 4) if br else None,
                 "buy_high": round(br[1], 4) if br else None,

@@ -11,6 +11,19 @@ QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
 # 훨씬 짧은 창으로도 충분하지만, 짧은 쪽에 맞추면 compute_bases.py와 창이 갈라져
 # 두 CSV의 base_label이 어긋난다.
 PRICE_YEARS = 5
+# 베이스를 판정하려면 일봉이 최소 이만큼 있어야 한다. detect_base는 rolling(252)로
+# 52주 고저를 낸 뒤에야 Stage2 시작일을 찾으므로, 일봉이 몇십 개뿐이면 그 구간이
+# 전부 NaN이고 거기서 나온 "Stage2 아님"은 판정이 아니라 거짓이다. 진실은
+# "Stage2가 아니다"가 아니라 "알 수 없다"다.
+#
+# 이 문턱과 아래 라벨은 canslim.py와 compute_bases.py가 같이 쓴다. 한쪽에만 두면
+# 두 CSV의 base_label이 신규 상장 종목에서 갈라진다 (PRICE_YEARS를 두 곳에서
+# 따로 정하다 종목의 37%가 어긋났던 것과 같은 사고다).
+MIN_BASE_ROWS = 60
+# 일봉이 MIN_BASE_ROWS 미만이라 판정하지 않은 종목의 라벨. 가격 데이터가 아예
+# 없어서 붙는 "-"와 반드시 구분한다. 둘을 같은 기호로 뭉개면 "자료가 없다"와
+# "자료가 짧다"를 나중에 되짚을 수 없다.
+BASE_INSUFFICIENT_LABEL = "자료 부족"
 INDEX_CODES = ["US500", "IXIC", "DJI"]
 
 
