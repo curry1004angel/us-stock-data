@@ -1,14 +1,13 @@
 # 종목별 추정 베이스 라벨(1a차·2 형성중 등)을 미리 계산해 results.csv에 base_label 컬럼으로 박는 스크립트
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from canslim_bases import detect_base
+from canslim_loaders import load_prices
 
-PRICES_DIR = Path("data/prices")
 RESULTS = Path("data/screener/results.csv")
 
 
@@ -18,17 +17,14 @@ def base_label(daily: pd.DataFrame) -> str:
 
 
 def main():
-    this = datetime.today().year
-    frames = []
-    for y in range(this - 4, this + 1):                              # 베이스 카운트용 최근 5년
-        p = PRICES_DIR / f"{y}.parquet"
-        if p.exists():
-            frames.append(pd.read_parquet(p, columns=["date", "ticker", "high", "low", "close", "volume"]))
-    if not frames:
+    # 연도 창과 행 필터는 canslim_loaders.load_prices 한 곳에만 둔다. canslim.py도
+    # 같은 함수로 읽으므로 창이 갈라져 base_label이 어긋나는 일은 없다.
+    # 다만 최소 길이 조건은 아직 두 곳이 다르다. canslim.py는 len(g) >= 60일 때만
+    # detect_base를 부르고(아니면 "-"), 여기서는 길이와 무관하게 부른다. 그래서
+    # 일봉이 60개 미만인 신규 상장 종목은 두 CSV의 라벨이 여전히 다르다.
+    px = load_prices()
+    if not len(px):
         raise RuntimeError("가격 데이터가 없습니다. data/prices/ 를 확인하세요.")
-    px = pd.concat(frames, ignore_index=True)
-    px["date"] = pd.to_datetime(px["date"].astype(str), format="%Y%m%d")
-    px = px[(px[["high", "low", "close"]] > 0).all(axis=1)].sort_values(["ticker", "date"])
 
     res = pd.read_csv(RESULTS, dtype={"ticker": str})
     targets = set(res["ticker"])

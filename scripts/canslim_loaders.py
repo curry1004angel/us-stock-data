@@ -6,7 +6,11 @@ from pathlib import Path
 import pandas as pd
 
 QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
-PRICE_YEARS = 2          # 50·200일선과 52주 고저에 2년이면 충분하다.
+# 베이스 카운트에 맞춘 창이다. Stage2 상승은 2년을 넘겨 이어지는 일이 흔해서 2년치로는
+# 상승 시작일이 창 밖에 있고 베이스가 조직적으로 적게 세어진다. 50·200일선과 52주 고저는
+# 훨씬 짧은 창으로도 충분하지만, 짧은 쪽에 맞추면 compute_bases.py와 창이 갈라져
+# 두 CSV의 base_label이 어긋난다.
+PRICE_YEARS = 5
 INDEX_CODES = ["US500", "IXIC", "DJI"]
 
 
@@ -46,6 +50,34 @@ def _read_parquet(path, columns=None):
     return pd.read_parquet(path)
 
 
+def load_prices(data_dir=Path("data")):
+    """최근 PRICE_YEARS년치 일봉을 한 프레임으로 읽어 필터·정렬해 돌려준다.
+
+    canslim.py와 compute_bases.py가 같은 detect_base를 부르므로 두 스크립트가 읽는
+    연도 창과 행 필터도 여기 한 곳에만 둔다. 각자 읽으면 창이 갈라져 같은 종목의
+    base_label이 두 CSV에서 달라진다.
+    """
+    data_dir = Path(data_dir)
+    frames = []
+    this_year = date.today().year
+    for y in range(this_year - PRICE_YEARS + 1, this_year + 1):
+        p = data_dir / f"prices/{y}.parquet"
+        if p.exists():
+            frames.append(pd.read_parquet(
+                p, columns=["date", "ticker", "high", "low", "close", "volume"]))
+    prices = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=["date", "ticker", "high", "low", "close", "volume"])
+    if len(prices):
+        prices["date"] = pd.to_datetime(prices["date"].astype(str), format="%Y%m%d")
+        # 거래량 0인 행은 거래일이 아니라 거래정지일이다. 남겨두면 50일 평균 거래량이
+        # 실제 거래를 실제보다 낮게 말하고, 정지가 풀린 첫날의 평범한 거래량이
+        # 거짓 급증으로 읽힌다.
+        prices = prices[(prices[["high", "low", "close"]] > 0).all(axis=1)
+                        & (prices["volume"] > 0)]
+        prices = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
+    return prices
+
+
 def load_all(data_dir=Path("data")):
     data_dir = Path(data_dir)
 
@@ -67,19 +99,7 @@ def load_all(data_dir=Path("data")):
     q = _read_parquet(data_dir / "financials/quarterly.parquet")
     a = _read_parquet(data_dir / "financials/annual.parquet")
 
-    frames = []
-    this_year = date.today().year
-    for y in range(this_year - PRICE_YEARS + 1, this_year + 1):
-        p = data_dir / f"prices/{y}.parquet"
-        if p.exists():
-            frames.append(pd.read_parquet(
-                p, columns=["date", "ticker", "high", "low", "close", "volume"]))
-    prices = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-        columns=["date", "ticker", "high", "low", "close", "volume"])
-    if len(prices):
-        prices["date"] = pd.to_datetime(prices["date"].astype(str), format="%Y%m%d")
-        prices = prices[(prices[["high", "low", "close"]] > 0).all(axis=1)]
-        prices = prices.sort_values(["ticker", "date"]).reset_index(drop=True)
+    prices = load_prices(data_dir)
 
     shares = _read_parquet(data_dir / "screener/shares_snapshot.parquet")
     if len(shares):
