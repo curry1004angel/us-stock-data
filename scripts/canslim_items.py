@@ -26,11 +26,19 @@ L_RS_MIN = 70                 # 스펙 5.6 핵심요소 1. 미만은 즉시 F
 L_RS_STRONG = 80              # 스펙 5.6 부가요소 1
 L_INDUSTRY_TOP_PCT = 0.20     # 스펙 5.6 핵심요소 2. 업종 평균 RS 상위 20%
 L_RANK_MAX = 3                # 스펙 5.6 핵심요소 3. 업종 내 3위 이내
+# 업종에 이 수보다 적은 종목만 있으면 "3위 이내"가 60% 이상을 통과시켜 변별력이 없다.
+# 한국 업종은 분류당 중앙값이 8.5종목이라 미국(23종목)보다 이 문제가 크다. 없는
+# 변별력을 있는 것처럼 보이게 하지 않으려고 미계산으로 보낸다 (스펙 3.2).
+L_MIN_INDUSTRY_SIZE = 5
 # 한국 레포에서 업종을 못 채운 종목에 넣는 센티널. 업종으로 취급하면 무관한 종목들이
 # 서로 피어가 되어 업종 백분위가 거짓이 된다 (스펙 5.6).
 INDUSTRY_SENTINELS = {"", "(분류 없음)", "-", "nan", "None"}
 
 I_HELD_MAX = 0.90             # 스펙 5.7 부가요소 1. 기관 비중이 과도하지 않음
+# 스펙 5.7 한국 핵심요소 1·2. 60일을 먼저, 20일을 다음으로 판정한다.
+I_KR_WINDOWS = (60, 20)
+# 두 투자자의 순매수를 더한 합으로 판정한다. 각각이 따로 양수여야 한다는 뜻이 아니다.
+I_KR_INVESTORS = ("기관합계", "외국인")
 
 
 def _rows(b, ticker, account, annual=False):
@@ -382,12 +390,20 @@ def judge_l(ticker, b, ind_stats, corr_drawdown):
                        bool(pct >= 1 - L_INDUSTRY_TOP_PCT),
                        f"{industry} 상위 {(1 - pct) * 100:.0f}%")
         ranked = ind_stats[industry]["ranked"]
-        rank = ranked.index(ticker) + 1 if ticker in ranked else None
-        if rank is None:
-            c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None, "업종 순위 계산 불가")
+        if len(ranked) < L_MIN_INDUSTRY_SIZE:
+            # len(ranked)는 업종 상장 종목 수가 아니라 그중 RS를 보유한 종목 수다
+            # (industry_stats가 RS 없는·NaN 종목을 건너뛴다). "RS 보유"를 명시하지
+            # 않으면 업종 자체가 작다는 뜻으로 잘못 읽힌다.
+            c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None,
+                           f"{industry} RS 보유 {len(ranked)}종목 "
+                           f"(순위 판정에 최소 {L_MIN_INDUSTRY_SIZE}종목 필요)")
         else:
-            c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", rank <= L_RANK_MAX,
-                           f"{industry} {rank}/{len(ranked)}위")
+            rank = ranked.index(ticker) + 1 if ticker in ranked else None
+            if rank is None:
+                c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", None, "업종 순위 계산 불가")
+            else:
+                c3 = Criterion(f"업종 내 RS {L_RANK_MAX}위 이내", rank <= L_RANK_MAX,
+                               f"{industry} {rank}/{len(ranked)}위")
 
     if rs is None:
         b1 = Criterion(f"RS 등급 {L_RS_STRONG} 이상", None, "RS 등급 없음")
@@ -442,3 +458,56 @@ def judge_i_us(ticker, b):
                        f"{held * 100:.1f}%")
 
     return grade_item("I", [c1], [b1])
+
+
+def _flow_sum(flows, ticker, window):
+    """해당 종목·기간의 기관합계+외국인 순매수 합을 낸다.
+
+    두 투자자 중 하나라도 행이 없거나 금액이 NaN이면 합 자체를 낼 수 없으므로
+    None을 돌려준다. 한쪽 금액만으로 판정하면 "기관이 샀는데 외국인이 더 팔았다"를
+    매수로 오판정한다. 금액 0은 결측이 아니라 실제 순매수 0이라 합에 그대로 더한다.
+    """
+    if flows is None or not len(flows):
+        return None
+    f = flows[(flows["ticker"] == ticker) & (flows["window"] == window)]
+    total = 0.0
+    for investor in I_KR_INVESTORS:
+        hit = f[f["investor"] == investor]
+        if not len(hit):
+            return None
+        # asof 오름차순 정렬 후 마지막 값을 집는다. 정렬 없이 iloc[-1]을 쓰면
+        # "가장 최근 asof"가 아니라 "프레임 행 순서상 마지막"을 집어, 같은
+        # (종목·기간·투자자)에 스냅샷이 여러 개 쌓이면 더 오래된 값이 최신으로
+        # 오판정될 수 있다 (judge_i_us의 asof 정렬과 같은 이유, 스펙 5.7).
+        v = hit.sort_values("asof")["amount"].iloc[-1]
+        # pd.isna는 NaN만 걸러낸다. inf는 NaN이 아니라서 그대로 통과하면 total이
+        # inf가 되고 total > 0이 조용히 True로 굳어 사유 문자열에도 "inf"가 샌다
+        # (결함 부류 3). 유한한 값만 합에 더한다.
+        if v is None or pd.isna(v) or v in (float("inf"), float("-inf")):
+            return None
+        total += float(v)
+    return total
+
+
+def judge_i_kr(ticker, b):
+    # 핵심요소 1·2. 기관+외국인 60일·20일 누적 순매수가 각각 0보다 큼
+    core = []
+    for window in I_KR_WINDOWS:
+        name = f"기관+외국인 {window}일 누적 순매수 양수"
+        total = _flow_sum(b.flows, ticker, window)
+        if total is None:
+            core.append(Criterion(name, None, f"{window}일 수급 자료 없음"))
+        else:
+            core.append(Criterion(name, bool(total > 0), f"{total / 1e8:+,.0f}억원"))
+
+    # 부가요소 1. 기관 비중이 과도하지 않음. 한국 애널리스트 스냅샷이 5종목뿐이라
+    # 사실상 전 종목 데이터부족이 된다. 부가요소는 분모에서 빠지므로 등급은 핵심요소로
+    # 정해진다 (스펙 3.1).
+    held = _snapshot_metric(b.analyst, ticker, "held_pct_institutions")
+    if held is None:
+        b1 = Criterion(f"기관 비중 {I_HELD_MAX * 100:.0f}% 미만", None, "기관 비중 없음")
+    else:
+        b1 = Criterion(f"기관 비중 {I_HELD_MAX * 100:.0f}% 미만", bool(held < I_HELD_MAX),
+                       f"{held * 100:.1f}%")
+
+    return grade_item("I", core, [b1])

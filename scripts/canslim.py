@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from canslim_bases import base_status, buy_range, detect_base
 from canslim_items import (industry_stats, judge_a, judge_c, judge_i_us, judge_l,
                            judge_n, judge_s, INDUSTRY_SENTINELS)
-from canslim_loaders import load_all
+from canslim_loaders import BASE_INSUFFICIENT_LABEL, MIN_BASE_ROWS, load_all
 from canslim_market import market_signal
 from canslim_scoring import total_score
 
@@ -119,11 +119,23 @@ def main():
 
     rows = []
     errors = []
+    # 요소별 미계산(passed is None) 집계. 종목 루프 안에서 같이 센다.
+    crit_total, crit_unknown = {}, {}
     for ticker in b.results.index:
         try:
             g = price_groups.get(ticker)
             vol_avg50, surge_days = _price_features(g) if g is not None else (None, None)
-            base = detect_base(g) if g is not None and len(g) >= 60 else None
+            base = detect_base(g) if g is not None and len(g) >= MIN_BASE_ROWS else None
+            # 라벨을 세 경우로 나눈다. 판정했으면 그 라벨, 일봉이 짧아 판정을 안 했으면
+            # "자료 부족", 가격 데이터가 아예 없으면 "-". 뒤 두 경우를 같은 기호로
+            # 뭉개면 "자료가 없다"와 "자료가 짧다"를 되짚을 수 없다. compute_bases.py도
+            # 같은 상수를 써서 results.csv에 같은 라벨을 넣는다.
+            if base is not None:
+                label = base.label
+            elif g is None:
+                label = "-"
+            else:
+                label = BASE_INSUFFICIENT_LABEL
 
             corr = None
             if dd and g is not None:
@@ -159,7 +171,7 @@ def main():
                 "insufficient": ",".join(agg["insufficient"]),
                 "rs_rating": b.results.loc[ticker].get("rs_rating"),
                 "close": close,
-                "base_label": base.label if base else "-",
+                "base_label": label,
                 "pivot": round(pivot, 4) if pivot else None,
                 "buy_low": round(br[0], 4) if br else None,
                 "buy_high": round(br[1], 4) if br else None,
@@ -172,6 +184,12 @@ def main():
             for it in items:
                 row[f"grade_{it.key}"] = it.grade
                 row[f"reason_{it.key}"] = it.reason
+                for kind, crits in (("핵심", it.core), ("부가", it.bonus)):
+                    for i, c in enumerate(crits, 1):
+                        label = f"{it.key}{kind}{i}"
+                        crit_total[label] = crit_total.get(label, 0) + 1
+                        if c.passed is None:
+                            crit_unknown[label] = crit_unknown.get(label, 0) + 1
             for col in ("market_cap", "float_shares", "shares_yoy"):
                 row[col] = b.shares.loc[ticker].get(col) if ticker in getattr(b.shares, "index", []) else None
             rows.append(row)
@@ -195,6 +213,14 @@ def main():
     print(f"판정 완료: {len(out)}종목 (정상 {n_ok}, 판정불가 {len(out) - n_ok}) -> {OUT_RESULTS}")
     for k in ITEM_KEYS:
         print(f"  {k} 등급 분포: {out[f'grade_{k}'].value_counts().to_dict()}")
+
+    # 요소별 미계산 비율. 사유 문자열은 통과한 부가요소만 싣기 때문에, 어떤 요소가
+    # 전 종목 미계산이어도 출력 어디에도 드러나지 않는다(그래서 결함 하나가 몇 주를
+    # 살아남았다). 100%에 가까운 요소는 데이터가 희소한 게 아니라 입력 계약이 깨진 것이다.
+    for k in ITEM_KEYS:
+        parts = [f"{lab[len(k):]} {crit_unknown.get(lab, 0) / crit_total[lab]:.1%}"
+                 for lab in crit_total if lab.startswith(k)]
+        print(f"  {k} 요소별 미계산율: {' / '.join(parts)}")
 
     # 선도 종목 동향을 시장 강도 단서로 삼는다 (스펙 5.8).
     top20 = out[out["verdict"] == "정상"].head(20)["ticker"].tolist()
@@ -229,9 +255,16 @@ def main():
             "signal": market["signal"], "advice": market["advice"],
             "top20_avg_change": top20_avg,
         })
-    pd.DataFrame(mrows).to_csv(OUT_MARKET, index=False, encoding="utf-8-sig")
-    print(f"시장 신호: {market['signal']} ({market['advice']}), "
-          f"분산일 {market['distribution_days']}, 상위20 평균 {top20_avg} -> {OUT_MARKET}")
+    if not mrows:
+        # 지수를 하나도 못 읽으면 pd.DataFrame([]).to_csv는 헤더도 없는 빈 파일을 쓰고,
+        # 워크플로가 그것을 커밋해 어제의 정상 시장 신호를 덮어쓴다. 결과 CSV 쪽
+        # MAX_FAILURE_RATE와 같은 이유로, 나쁜 것으로 좋은 것을 덮어쓰느니 안 쓴다.
+        print(f"::warning::시장 신호 행이 0건이라 {OUT_MARKET}를 쓰지 않는다. "
+              f"data/indices/를 확인하라.")
+    else:
+        pd.DataFrame(mrows).to_csv(OUT_MARKET, index=False, encoding="utf-8-sig")
+        print(f"시장 신호: {market['signal']} ({market['advice']}), "
+              f"분산일 {market['distribution_days']}, 상위20 평균 {top20_avg} -> {OUT_MARKET}")
 
 
 if __name__ == "__main__":
