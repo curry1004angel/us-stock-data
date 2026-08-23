@@ -1,0 +1,39 @@
+name: SEC API 접근 확인
+
+# SEC가 CI IP를 막는지 확인하는 탐침. companyfacts.zip 대량 다운로드는 403이 났지만
+# data.sec.gov의 companyconcept API도 같은지는 확인된 바 없다. 이 결과에 따라
+# EPS 원천을 SEC로 옮길 때 자동화가 되는지 매 분기 수동인지 갈린다.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: companyconcept API 호출
+        run: |
+          python - <<'PY'
+          import time, urllib.request, urllib.error
+          H = {"User-Agent": "canslim-research vkdlzlz11@gmail.com"}
+          targets = {
+              "AAPL": "0000320193", "MSFT": "0000789019",
+              "DELL": "0001571996", "BKNG": "0001075531",
+          }
+          ok = 0
+          for tk, cik in targets.items():
+              u = (f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}"
+                   f"/us-gaap/EarningsPerShareBasic.json")
+              try:
+                  r = urllib.request.urlopen(urllib.request.Request(u, headers=H), timeout=30)
+                  n = len(r.read())
+                  print(f"{tk}: HTTP {r.status}, {n} bytes")
+                  ok += 1
+              except urllib.error.HTTPError as e:
+                  print(f"{tk}: HTTP {e.code} {e.reason}")
+              except Exception as e:
+                  print(f"{tk}: {type(e).__name__} {e}")
+              time.sleep(0.2)
+          print(f"RESULT {ok}/{len(targets)} 성공")
+          PY
