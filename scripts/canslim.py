@@ -8,8 +8,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from canslim_bases import base_status, buy_range, detect_base
-from canslim_items import (industry_stats, judge_a, judge_c, judge_i_us, judge_l,
-                           judge_n, judge_s, INDUSTRY_SENTINELS)
+from canslim_items import (filter_metrics, industry_stats, judge_a, judge_c,
+                           judge_i_us, judge_l, judge_n, judge_s, INDUSTRY_SENTINELS)
 from canslim_loaders import BASE_INSUFFICIENT_LABEL, MIN_BASE_ROWS, load_all
 from canslim_market import market_signal
 from canslim_scoring import total_score
@@ -192,6 +192,9 @@ def main():
                             crit_unknown[label] = crit_unknown.get(label, 0) + 1
             for col in ("market_cap", "float_shares", "shares_yoy"):
                 row[col] = b.shares.loc[ticker].get(col) if ticker in getattr(b.shares, "index", []) else None
+            # 스크리너 숫자 필터용. 판정이 쓴 것과 같은 수치를 같이 싣는다 —
+            # 앱이 재무 parquet(수 MB)을 필터마다 읽지 않아도 되게 한다.
+            row.update(filter_metrics(ticker, b))
             rows.append(row)
         except Exception as e:
             # 종목 하나의 예외로 5,840종목 전체 실행이 죽으면 일일 워크플로가 결과 자체를

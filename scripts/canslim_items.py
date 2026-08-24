@@ -158,11 +158,48 @@ def _annual_last(b, ticker, account):
     return d.sort_values("year").to_dict("records")[-1]
 
 
-def judge_a(ticker, b):
+def eps_annual_window(b, ticker):
+    """(연간 EPS 전체 기록, A 항목이 보는 창). 둘 다 연도 오름차순이다."""
     eps = _rows(b, ticker, "eps", annual=True)
     recs = eps.sort_values("year").to_dict("records") if eps is not None else []
     # 3년 증가율 3개를 내려면 연도가 4개 필요하다.
-    window = recs[-(A_YEARS + 1):]
+    return recs, recs[-(A_YEARS + 1):]
+
+
+def eps_cum_growth(window):
+    """창 전체의 누적 EPS 증가율(%). 낼 수 없으면 None.
+
+    judge_a 핵심요소 1이 쓰는 식과 같다. 스크리너 숫자 필터가 판정과 다른 값을
+    보이면 사용자가 등급과 수치를 대조할 수 없으므로 한 군데서만 계산한다.
+    """
+    if len(window) < A_YEARS + 1:
+        return None
+    first, last = window[0]["amount"], window[-1]["amount"]
+    # NaN은 truthy라 first<=0 같은 단순 비교로는 걸러지지 않는다. first는
+    # _valid_denominator로, last는 pd.isna로 따로 막는다 (스펙 5.3).
+    if not _valid_denominator(first) or pd.isna(last):
+        return None
+    return (last - first) / abs(first) * 100
+
+
+def filter_metrics(ticker, b):
+    """스크리너에서 숫자로 거르기 위한 값들. 판정이 쓴 것과 같은 수치다.
+
+    등급만으로는 "왜 C가 B인지"를 숫자로 확인할 수 없어 결과 파일에 같이 싣는다.
+    값이 없으면 None이다 — 0으로 채우면 미계산이 미달로 둔갑한다 (스펙 3.2).
+    """
+    eps_cur, _ = latest_two_yoy(_rows(b, ticker, "eps"))
+    ni = _annual_last(b, ticker, "net_income")
+    _, window = eps_annual_window(b, ticker)
+    return {
+        "net_income": None if ni is None else ni.get("amount"),
+        "eps_yoy_q": eps_cur["yoy"] if eps_cur is not None else None,
+        "eps_growth_3y": eps_cum_growth(window),
+    }
+
+
+def judge_a(ticker, b):
+    recs, window = eps_annual_window(b, ticker)
 
     if len(window) < A_YEARS + 1:
         c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상", None,
@@ -170,14 +207,11 @@ def judge_a(ticker, b):
         c2 = Criterion(f"{A_YEARS}년 연속 EPS 증가", None, "연간 EPS 부족")
         growths = []
     else:
-        first, last = window[0]["amount"], window[-1]["amount"]
-        # NaN은 truthy라 first<=0 같은 단순 비교로는 걸러지지 않는다. first는
-        # _valid_denominator로, last는 pd.isna로 따로 막는다 (스펙 5.3).
-        if not _valid_denominator(first) or pd.isna(last):
+        cum = eps_cum_growth(window)
+        if cum is None:
             c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상", None,
                            "기준 연도 EPS가 0 이하이거나 값이 없어 증가율을 낼 수 없다")
         else:
-            cum = (last - first) / abs(first) * 100
             c1 = Criterion(f"{A_YEARS}년 누적 EPS 증가율 {A_CAGR_MIN:.0f}% 이상",
                            bool(cum >= A_CAGR_MIN),
                            f"{window[0]['year']}~{window[-1]['year']} {cum:+.1f}%")

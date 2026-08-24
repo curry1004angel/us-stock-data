@@ -857,3 +857,62 @@ def test_L_업종_종목수가_최소치_이상이면_핵심3이_계산된다():
     stats = ci.industry_stats(res, sl)
     assert ci.judge_l(tickers[0], b, stats, None).core[2].passed is True
     assert ci.judge_l(tickers[-1], b, stats, None).core[2].passed is False
+
+
+# ---------- 스크리너 숫자 필터용 수치 ----------
+
+def 연간프레임(rows, account="eps"):
+    # rows = [(year, amount, yoy)]
+    return pd.DataFrame(
+        [{"ticker": "AAA", "year": y, "account": account, "amount": a, "yoy": v}
+         for y, a, v in rows]
+    )
+
+
+def test_필터수치가_판정과_같은_값을_낸다():
+    # 등급과 나란히 보이는 숫자가 판정이 쓴 것과 다르면 사용자가 대조할 수 없다.
+    annual = {("AAA", "eps"): 연간프레임([(2022, 100.0, None), (2023, 130.0, 30.0),
+                                          (2024, 170.0, 30.8), (2025, 220.0, 29.4)]),
+              ("AAA", "net_income"): 연간프레임([(2024, 8.0e9, None), (2025, 1.1e10, 37.5)],
+                                                "net_income")}
+    quarterly = {("AAA", "eps"): 분기프레임([(2025, "4Q", 55.0, 21.0),
+                                             (2026, "1Q", 60.0, 42.0)])}
+    b = 번들(quarterly=quarterly, annual=annual)
+
+    m = ci.filter_metrics("AAA", b)
+    assert m["net_income"] == 1.1e10
+    assert m["eps_yoy_q"] == 42.0
+    # judge_a 핵심요소 1과 같은 창·같은 식이어야 한다.
+    assert m["eps_growth_3y"] == pytest.approx((220.0 - 100.0) / 100.0 * 100)
+
+    a_item = ci.judge_a("AAA", b)
+    assert f"{m['eps_growth_3y']:+.1f}%" in a_item.core[0].detail
+    c_item = ci.judge_c("AAA", b, {})
+    assert f"{m['eps_yoy_q']:+.1f}%" in c_item.core[0].detail
+
+
+def test_값이_없으면_0이_아니라_None이다():
+    # 0으로 채우면 미계산이 "순이익 0"으로 둔갑해 필터에서 미달로 걸러진다.
+    m = ci.filter_metrics("AAA", 번들())
+    assert m == {"net_income": None, "eps_yoy_q": None, "eps_growth_3y": None}
+
+
+def test_연도가_모자라면_누적증가율이_None이다():
+    # 3년 증가율에는 연도 4개가 필요하다. 3개로 계산하면 짧은 구간을 3년인 척한다.
+    annual = {("AAA", "eps"): 연간프레임([(2023, 100.0, None), (2024, 150.0, 50.0),
+                                          (2025, 200.0, 33.3)])}
+    assert ci.filter_metrics("AAA", 번들(annual=annual))["eps_growth_3y"] is None
+
+
+def test_기준연도_EPS가_0이하면_누적증가율이_None이다():
+    # 적자에서 흑자로 돌아선 종목은 증가율이 무한대가 된다. 숫자를 만들지 않는다.
+    for first in (0.0, -50.0):
+        annual = {("AAA", "eps"): 연간프레임([(2022, first, None), (2023, 130.0, None),
+                                              (2024, 170.0, 30.8), (2025, 220.0, 29.4)])}
+        assert ci.filter_metrics("AAA", 번들(annual=annual))["eps_growth_3y"] is None
+
+
+def test_기준연도_EPS가_NaN이면_누적증가율이_None이다():
+    annual = {("AAA", "eps"): 연간프레임([(2022, float("nan"), None), (2023, 130.0, None),
+                                          (2024, 170.0, 30.8), (2025, 220.0, 29.4)])}
+    assert ci.filter_metrics("AAA", 번들(annual=annual))["eps_growth_3y"] is None
