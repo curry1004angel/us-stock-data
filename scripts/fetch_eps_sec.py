@@ -34,9 +34,14 @@ UA = "canslim-screener (contact: vkdlzlz11@gmail.com)"
 HEADERS = {"User-Agent": UA, "Accept-Encoding": "gzip, deflate"}
 
 # 우선순위대로 폴백한다. 하나라도 값이 나오면 거기서 멈춘다.
+# IncomeLossFromContinuingOperationsPerBasicShare가 필요하다 — Airbnb는 이것만
+# 쓰고 EarningsPerShareBasic은 404다. 오닐도 계속사업 기준을 보므로 성격도 맞다.
 TAGS = [("us-gaap", "EarningsPerShareBasic"),
         ("us-gaap", "EarningsPerShareBasicAndDiluted"),
+        ("us-gaap", "IncomeLossFromContinuingOperationsPerBasicShare"),
         ("ifrs-full", "BasicEarningsLossPerShare")]
+UNIT_KEY = "USD/shares"
+FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
 FORMS = ("10-K", "10-Q", "20-F", "40-F")
 ANNUAL_DAYS = (330, 400)
@@ -85,21 +90,68 @@ def load_cik_map():
 
 
 def fetch_facts(cik, session=None):
-    """첫 번째로 값이 나오는 태그의 사실 목록. 없으면 빈 리스트."""
+    """(사실 목록, 상태). 상태는 "ok" | "none" | "fail".
+
+    "none"은 이 회사가 주당이익을 아예 공시하지 않는다는 뜻이고, 그때만 기존
+    값을 지운다. 조회 실패("fail")와 섞으면 네트워크 문제로 멀쩡한 데이터가
+    지워진다.
+
+    companyconcept가 비면 companyfacts로 한 번 더 확인한다. 두 창구가 서로
+    다른 답을 준다 — Abbott은 companyfacts에 EarningsPerShareBasic이 313건
+    있는데 companyconcept는 HTTP 200에 0건을 돌려준다. 여기서 물러서면 멀쩡한
+    대형주의 EPS가 통째로 지워진다(2026-08-24에 ABT·ACHC가 그렇게 날아갔다).
+    """
     get = (session or requests).get
-    for taxonomy, tag in TAGS:
+    failed = False
+    for i, (taxonomy, tag) in enumerate(TAGS):
         url = f"{SEC_BASE}/CIK{cik}/{taxonomy}/{tag}.json"
         try:
             r = get(url, headers=HEADERS, timeout=30)
         except Exception:  # noqa: BLE001
+            failed = True
             continue
         time.sleep(SEC_SLEEP)
+        if r.status_code == 404:
+            continue                      # 이 태그를 안 쓰는 회사다
         if r.status_code != 200:
+            failed = True
             continue
-        facts = r.json().get("units", {}).get("USD/shares", [])
+        facts = r.json().get("units", {}).get(UNIT_KEY, [])
         if facts:
-            return facts
-    return []
+            return facts, "ok"
+        if i == 0:
+            # 주 태그가 HTTP 200에 0건이다. 안 쓰는 회사면 404가 온다. 200에
+            # 0건은 companyconcept가 가진 것을 다 안 보여주는 경우다 —
+            # Abbott은 companyfacts에 313건인데 여기서는 0건이다. 이때 보조
+            # 태그로 넘어가면 빈약한 값(ACHC: 12건)이 풍부한 주 태그(254건)를
+            # 이겨 계열이 잘린다. 뒤 태그를 보지 않고 companyfacts로 간다.
+            break
+
+    return _facts_from_companyfacts(cik, get, failed)
+
+
+def _facts_from_companyfacts(cik, get, already_failed):
+    """companyfacts 전체에서 주당이익 태그를 우선순위대로 찾는다."""
+    try:
+        r = get(FACTS_URL.format(cik=cik), headers=HEADERS, timeout=60)
+    except Exception:  # noqa: BLE001
+        return [], "fail"
+    time.sleep(SEC_SLEEP)
+    if r.status_code == 404:
+        return [], "none" if not already_failed else "fail"
+    if r.status_code != 200:
+        return [], "fail"
+    try:
+        facts = r.json().get("facts", {})
+    except ValueError:
+        return [], "fail"
+
+    for taxonomy, tag in TAGS:
+        items = facts.get(taxonomy, {}).get(tag, {}).get("units", {}).get(UNIT_KEY, [])
+        if items:
+            return items, "ok"
+    # 조회는 성공했는데 어느 태그에도 값이 없다. 진짜로 주당이익을 안 내는 회사다.
+    return [], "none" if not already_failed else "fail"
 
 
 def usable(fact):
@@ -323,7 +375,7 @@ def main():
 
     session = requests.Session()
     q_all, a_all = [], []
-    ok = no_cik = no_tag = no_splits = dropped = 0
+    ok = no_cik = no_tag = no_splits = dropped = fetch_fail = no_rows = 0
     errors, dropped_detail, processed = [], [], set()
     for i, tk in enumerate(tickers, 1):
         # 종목 하나의 예외로 전체가 죽으면 여기까지 받은 수천 종목이 통째로
@@ -338,21 +390,30 @@ def main():
                 # 분할 이력을 모르면 조정할 수 없다. 조정 없이 저장하느니 비워둔다.
                 no_splits += 1
                 continue
-            facts = fetch_facts(cik, session)
-            # SEC 응답까지 받아본 종목이다. 주당이익 태그가 없어도 여기 넣는다 —
-            # 그 종목의 기존 야후 값은 지워야 한다(폴백을 두지 않기로 한 결정).
-            processed.add(tk)
-            if not facts:
+            facts, status = fetch_facts(cik, session)
+            if status == "fail":
+                fetch_fail += 1
+                continue                  # 손대지 않는다. 기존 값이 남는다
+            if status == "none":
+                # 주당이익을 아예 공시하지 않는 회사다(펀드·SPAC 다수). 기존
+                # 야후 값을 지운다 — 남겨두면 그 계산값이 그대로 판정에 쓰인다.
                 no_tag += 1
+                processed.add(tk)
                 continue
+
             q_rows, a_rows = build_rows(tk, facts, splits)
             a_rows, bad = drop_scale_outliers(
                 a_rows, net_income_by_year(existing_annual, tk))
             if bad:
                 dropped += len(bad)
                 dropped_detail.append((tk, bad))
-            if q_rows or a_rows:
-                ok += 1
+            if not q_rows and not a_rows:
+                # 사실은 받았는데 쓸 행이 안 나왔다. 회사가 안 낸 것이 아니라
+                # 우리 추출이 못 건진 것이므로 기존 값을 지우면 안 된다.
+                no_rows += 1
+                continue
+            ok += 1
+            processed.add(tk)
             q_all += q_rows
             a_all += a_rows
         except Exception as e:  # noqa: BLE001
@@ -366,7 +427,8 @@ def main():
             print(f"  {tk}: {msg}", flush=True)
 
     print(f"수집 완료: {ok}종목 / CIK 없음 {no_cik} / 분할이력 실패 {no_splits} / "
-          f"EPS 태그 없음 {no_tag} / 자릿수 폐기 {dropped}건 "
+          f"SEC 조회 실패 {fetch_fail} / 주당이익 미공시 {no_tag} / "
+          f"사실은 있으나 행 없음 {no_rows} / 자릿수 폐기 {dropped}건 "
           f"({len(dropped_detail)}종목)", flush=True)
     for tk, bad in dropped_detail[:40]:
         print(f"  폐기 {tk}: {bad}", flush=True)

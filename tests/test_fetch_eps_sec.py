@@ -193,6 +193,110 @@ def test_진짜_빈_칸은_빠진다(tmp_path):
     assert F.load_tickers(p) == ["AAPL", "MSFT"]
 
 
+# --- 조회 상태: 삭제 여부를 가르는 관문 ---
+
+class FakeResponse:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+def _units(n, tag="EarningsPerShareBasic"):
+    return {"units": {"USD/shares": [
+        {"start": "2024-01-01", "end": "2024-12-31", "val": float(i),
+         "filed": "2025-02-01", "form": "10-K"} for i in range(n)]}}
+
+
+def _facts(n, taxonomy="us-gaap", tag="EarningsPerShareBasic"):
+    return {"facts": {taxonomy: {tag: _units(n)}}}
+
+
+def test_주_태그에_값이_있으면_바로_쓴다():
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        return FakeResponse(200, _units(3))
+
+    facts, status = F.fetch_facts("0000320193", type("S", (), {"get": staticmethod(get)}))
+    assert status == "ok" and len(facts) == 3
+    assert len(calls) == 1
+
+
+def test_주_태그가_200에_0건이면_보조_태그를_믿지_않는다():
+    # ACHC 실측: 주 태그가 200에 0건이고 보조 태그에 12건뿐인데, 정작
+    # companyfacts에는 주 태그가 254건 있다. 보조 태그가 이기면 계열이 잘린다.
+    seen = []
+
+    def get(url, **kw):
+        seen.append(url)
+        if "companyfacts" in url:
+            return FakeResponse(200, _facts(254))
+        return FakeResponse(200, _units(0))
+
+    facts, status = F.fetch_facts("0001520697", type("S", (), {"get": staticmethod(get)}))
+    assert status == "ok" and len(facts) == 254
+    # 주 태그 한 번 보고 곧장 companyfacts로 갔다. 보조 태그는 묻지 않는다.
+    assert len(seen) == 2 and "companyfacts" in seen[1]
+
+
+def test_주_태그가_404면_보조_태그를_쓴다():
+    # ABNB 실측: EarningsPerShareBasic이 404고 계속사업 주당이익만 있다.
+    def get(url, **kw):
+        if "EarningsPerShareBasic.json" in url:
+            return FakeResponse(404)
+        if "IncomeLossFromContinuingOperationsPerBasicShare" in url:
+            return FakeResponse(200, _units(68))
+        return FakeResponse(404)
+
+    facts, status = F.fetch_facts("0001559720", type("S", (), {"get": staticmethod(get)}))
+    assert status == "ok" and len(facts) == 68
+
+
+def test_전부_404면_주당이익_미공시다():
+    # 이때만 기존 값을 지운다. 폐쇄형 펀드·SPAC이 여기 해당한다.
+    def get(url, **kw):
+        return FakeResponse(404)
+
+    facts, status = F.fetch_facts("0000000001", type("S", (), {"get": staticmethod(get)}))
+    assert status == "none" and facts == []
+
+
+def test_조회가_실패하면_미공시로_보지_않는다():
+    # 네트워크 문제를 미공시로 뭉개면 멀쩡한 종목의 EPS가 지워진다.
+    def get(url, **kw):
+        raise ConnectionError("boom")
+
+    facts, status = F.fetch_facts("0000320193", type("S", (), {"get": staticmethod(get)}))
+    assert status == "fail" and facts == []
+
+
+def test_일부_실패하고_나머지가_404면_실패로_본다():
+    # 한 태그라도 조회에 실패했으면 "안 쓰는 회사"라고 단정할 수 없다.
+    def get(url, **kw):
+        if "companyfacts" in url:
+            return FakeResponse(404)
+        if "EarningsPerShareBasic.json" in url:
+            return FakeResponse(503)
+        return FakeResponse(404)
+
+    facts, status = F.fetch_facts("0000320193", type("S", (), {"get": staticmethod(get)}))
+    assert status == "fail"
+
+
+def test_ifrs_태그도_찾는다():
+    def get(url, **kw):
+        if "companyfacts" in url:
+            return FakeResponse(200, _facts(9, "ifrs-full", "BasicEarningsLossPerShare"))
+        return FakeResponse(404)
+
+    facts, status = F.fetch_facts("0000000002", type("S", (), {"get": staticmethod(get)}))
+    assert status == "ok" and len(facts) == 9
+
+
 # --- 쓰기: 처리한 종목만 갈아 끼운다 ---
 
 KEYS = ["ticker", "year", "account"]
