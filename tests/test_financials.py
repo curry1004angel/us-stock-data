@@ -46,6 +46,8 @@ def test_NaN_값은_행을_만들지_않는다():
     assert len(rows) == 1
 
 
-def test_ROW_MAP에_eps가_있다():
-    assert "eps" in ff.ROW_MAP
-    assert "Basic EPS" in ff.ROW_MAP["eps"]
+def test_ROW_MAP에_eps가_없다():
+    # 야후는 공시 EPS가 없으면 Net Income ÷ Basic Average Shares로 자기가 만드는데
+    # 그 주식수가 틀릴 때가 있다(DELL 2026: 야후 9.107482 대 공시 8.79). EPS는
+    # fetch_eps_sec.py가 SEC 공시값으로 채운다. 여기 되돌리면 그 값을 다시 덮는다.
+    assert "eps" not in ff.ROW_MAP

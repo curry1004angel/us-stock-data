@@ -1,8 +1,14 @@
 # yfinance(야후)로 미국 상장사 분기/연간 재무(매출·영업이익·순이익)를 수집해 Parquet으로 저장하는 스크립트
 #
-# 원래 SEC EDGAR를 쓰려 했으나 SEC가 GitHub Actions·자동화 IP를 모두 403 차단(Akamai)해 야후로 대체했다.
 # 야후 분기 손익은 종료일 기준이라, 분기를 "종료일의 달력 분기"(1Q~4Q)로 라벨링한다.
-# (선택적으로 SEC 벌크를 한 번 받아 과거 이력을 보강할 수 있다 — seed 스크립트 별도.)
+#
+# 주당이익(eps)은 여기서 받지 않는다. 야후는 공시 EPS가 없으면 Net Income ÷ Basic
+# Average Shares로 자기가 만드는데 그 주식수가 틀릴 때가 있다(BKNG 2023: 야후 4.7468
+# 대 공시 118.67, 25배). fetch_eps_sec.py가 SEC 공시값을 직접 받아 채운다.
+#
+# 예전 주석에 "SEC가 GitHub Actions·자동화 IP를 모두 403 차단(Akamai)한다"고 적혀
+# 있었으나 2026-08-23 실측으로 틀렸음을 확인했다. 403은 www.sec.gov의 companyfacts.zip
+# 대량 다운로드에만 해당하고, data.sec.gov의 종목별 API는 CI에서 정상 동작한다.
 import time
 import pandas as pd
 from pathlib import Path
@@ -15,8 +21,6 @@ ROW_MAP = {
     "revenue": ["Total Revenue", "Operating Revenue"],
     "operating_profit": ["Operating Income", "Operating Income Or Loss"],
     "net_income": ["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations"],
-    # 주당순이익. 주식수로 나눠 계산하지 않고 공시값을 그대로 받는다 — 분할·우선주가 이미 반영돼 있다.
-    "eps": ["Basic EPS", "Basic Earnings Per Share"],
 }
 
 # 재무상태표 — 잔액(시점) 값. 은행 등은 유동/비유동 구분이 없어 current_*가 비는데 정상(NaN 처리).
@@ -58,7 +62,7 @@ def extract(df, ticker, quarterly, row_map=ROW_MAP):
             if pd.isna(val):
                 continue
             ts = pd.Timestamp(col)
-            # EPS는 소수(NVDA 4.93달러)라 int로 캐스팅하면 값이 파괴된다. 전 계정을 float로 통일한다.
+            # 전 계정을 float로 통일한다. int 캐스팅은 소수 계정의 값을 파괴한다.
             row = {"ticker": ticker, "year": int(ts.year), "account": account, "amount": sign * float(val)}
             if quarterly:
                 row["quarter"] = f"{(ts.month - 1) // 3 + 1}Q"

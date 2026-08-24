@@ -1,0 +1,49 @@
+name: SEC 주당이익 백필
+
+# EPS 원천을 야후에서 SEC 공시로 갈아탈 때 한 번 돌리는 전체 백필.
+# 정기 갱신은 financials.yml에 붙어 있으므로 평소에는 이 워크플로가 필요 없다.
+# 기존 eps 행을 전부 지우고 SEC 값으로 다시 채운다(sample을 주면 지우지 않는다).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: '앞에서 N종목만 (0이면 전체, 표본은 기존 데이터를 지우지 않음)'
+        required: true
+        default: '0'
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 주당이익 백필 (SEC)
+        run: python scripts/fetch_eps_sec.py --limit ${{ github.event.inputs.sample }}
+
+      - name: QoQ/YoY 계산
+        run: python scripts/calculate_changes.py
+
+      - name: CANSLIM 판정
+        run: python scripts/canslim.py
+
+      - name: 변경사항 커밋 및 푸시
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/financials/ data/screener/
+          git diff --staged --quiet || git commit -m "SEC 주당이익 백필: $(date -u +%Y%m%d)"
+          git pull --rebase
+          git push

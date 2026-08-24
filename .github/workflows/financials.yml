@@ -26,6 +26,13 @@ jobs:
       - name: 재무제표 수집 (yfinance)
         run: python scripts/fetch_financials.py
 
+      # 주당이익만 SEC 공시에서 따로 받는다. 야후는 공시 EPS가 없으면
+      # Net Income ÷ Basic Average Shares로 자기가 만드는데 그 주식수가 틀릴 때가
+      # 있다(DELL 2026: 야후 9.107482 대 공시 8.79). 기존 eps 행을 지우고 다시
+      # 채우므로 fetch_financials 뒤, calculate_changes 앞에 와야 한다.
+      - name: 주당이익 수집 (SEC)
+        run: python scripts/fetch_eps_sec.py
+
       - name: 주식수 스냅샷 수집
         run: python scripts/fetch_shares.py
 
