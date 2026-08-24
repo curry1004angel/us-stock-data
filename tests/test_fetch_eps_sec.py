@@ -174,3 +174,20 @@ def test_값이_없는_사실은_건너뛴다(bad):
     facts = [fact("2024-02-01", "2025-01-31", None, "2025-03-01")]
     _, a = F.build_rows("X", facts)
     assert a == []
+
+
+def test_티커_NA는_결측이_아니라_종목이다(tmp_path):
+    # Nano Labs Ltd의 티커가 실제로 "NA"다. pandas는 dtype=str를 줘도 이것을
+    # NaN(float)으로 바꾸고, 루프에서 tk.upper()가 터져 2,700종목이 날아갔다
+    # (2026-08-24 실행). 결측으로 버리면 멀쩡한 종목 하나를 조용히 잃는다.
+    p = tmp_path / "stock_list.csv"
+    p.write_text("ticker,name\nAAPL,Apple\nNA,Nano Labs Ltd\nMSFT,Microsoft\n",
+                 encoding="utf-8-sig")
+    assert F.load_tickers(p) == ["AAPL", "NA", "MSFT"]
+
+
+def test_진짜_빈_칸은_빠진다(tmp_path):
+    p = tmp_path / "stock_list.csv"
+    p.write_text("ticker,name\nAAPL,Apple\n,빈칸\n  ,공백\nMSFT,Microsoft\n",
+                 encoding="utf-8-sig")
+    assert F.load_tickers(p) == ["AAPL", "MSFT"]

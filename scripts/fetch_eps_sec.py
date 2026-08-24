@@ -58,6 +58,19 @@ SEC_SLEEP = 0.11           # SEC 권고 초당 10건
 SPLIT_WORKERS = 6          # yfinance 분할 이력 병렬 수. 야후 차단을 피해 낮게 잡는다
 
 
+def load_tickers(path):
+    """종목 목록에서 쓸 수 있는 티커만 뽑는다.
+
+    keep_default_na=False가 핵심이다. dtype=str를 줘도 pandas는 "NA"·"N/A"·"NULL"
+    같은 문자열을 결측으로 바꿔버린다. Nano Labs Ltd의 티커가 실제로 "NA"라서
+    NaN(float)이 되었고, 루프 한복판에서 tk.upper()가 AttributeError로 터졌다.
+    저장이 루프 뒤에 있어 그때까지 받은 2,700종목이 통째로 날아갔다.
+    결측으로 버리는 것도 답이 아니다 — 멀쩡한 종목 하나를 조용히 잃는다.
+    """
+    sl = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    return [t.strip() for t in sl["ticker"].tolist() if str(t).strip()]
+
+
 def load_cik_map():
     """{티커: 10자리 CIK}. company_tickers.json은 dict 또는 list로 온다."""
     raw = json.loads((DATA / "company_tickers.json").read_text(encoding="utf-8"))
@@ -246,8 +259,7 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="앞에서 N종목만 (표본 실행용)")
     args = ap.parse_args()
 
-    sl = pd.read_csv(DATA / "stock_list.csv", dtype=str, encoding="utf-8-sig")
-    tickers = sl["ticker"].tolist()
+    tickers = load_tickers(DATA / "stock_list.csv")
     if args.limit:
         tickers = tickers[:args.limit]
     cik_map = load_cik_map()
@@ -274,34 +286,49 @@ def main():
     session = requests.Session()
     q_all, a_all = [], []
     ok = no_cik = no_tag = no_splits = dropped = 0
+    errors, dropped_detail = [], []
     for i, tk in enumerate(tickers, 1):
-        cik = cik_map.get(tk.upper())
-        if not cik:
-            no_cik += 1
-            continue
-        splits = splits_by_ticker.get(tk)
-        if splits is None:
-            # 분할 이력을 모르면 조정할 수 없다. 조정 없이 저장하느니 비워둔다.
-            no_splits += 1
-            continue
-        facts = fetch_facts(cik, session)
-        if not facts:
-            no_tag += 1
-            continue
-        q_rows, a_rows = build_rows(tk, facts, splits)
-        a_rows, bad = drop_scale_outliers(a_rows, net_income_by_year(existing_annual, tk))
-        if bad:
-            dropped += len(bad)
-            print(f"  {tk}: 자릿수 이상으로 {bad} 폐기", flush=True)
-        if q_rows or a_rows:
-            ok += 1
-        q_all += q_rows
-        a_all += a_rows
-        if i % 200 == 0:
+        # 종목 하나의 예외로 전체가 죽으면 여기까지 받은 수천 종목이 통째로
+        # 버려진다(저장은 루프가 끝난 뒤에 한다). 티커와 예외는 반드시 남긴다.
+        try:
+            cik = cik_map.get(tk.upper())
+            if not cik:
+                no_cik += 1
+                continue
+            splits = splits_by_ticker.get(tk)
+            if splits is None:
+                # 분할 이력을 모르면 조정할 수 없다. 조정 없이 저장하느니 비워둔다.
+                no_splits += 1
+                continue
+            facts = fetch_facts(cik, session)
+            if not facts:
+                no_tag += 1
+                continue
+            q_rows, a_rows = build_rows(tk, facts, splits)
+            a_rows, bad = drop_scale_outliers(
+                a_rows, net_income_by_year(existing_annual, tk))
+            if bad:
+                dropped += len(bad)
+                dropped_detail.append((tk, bad))
+            if q_rows or a_rows:
+                ok += 1
+            q_all += q_rows
+            a_all += a_rows
+        except Exception as e:  # noqa: BLE001
+            errors.append((tk, f"{type(e).__name__}: {e}"))
+        if i % 500 == 0:
             print(f"  {i}/{len(tickers)} 처리 (수집 {ok}종목)", flush=True)
 
+    if errors:
+        print(f"경고: {len(errors)}종목에서 예외가 발생해 제외됨.", flush=True)
+        for tk, msg in errors[:30]:
+            print(f"  {tk}: {msg}", flush=True)
+
     print(f"수집 완료: {ok}종목 / CIK 없음 {no_cik} / 분할이력 실패 {no_splits} / "
-          f"EPS 태그 없음 {no_tag} / 폐기 {dropped}건", flush=True)
+          f"EPS 태그 없음 {no_tag} / 자릿수 폐기 {dropped}건 "
+          f"({len(dropped_detail)}종목)", flush=True)
+    for tk, bad in dropped_detail[:40]:
+        print(f"  폐기 {tk}: {bad}", flush=True)
 
     path_q = DATA / "financials/quarterly.parquet"
     if not args.limit:
