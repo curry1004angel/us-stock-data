@@ -193,44 +193,71 @@ def test_진짜_빈_칸은_빠진다(tmp_path):
     assert F.load_tickers(p) == ["AAPL", "MSFT"]
 
 
-# --- 갈아엎기 가드 ---
+# --- 쓰기: 처리한 종목만 갈아 끼운다 ---
 
-def _eps_parquet(path, tickers):
-    pd.DataFrame([{"ticker": t, "year": 2025, "quarter": "1Q",
-                   "account": "eps", "amount": 1.0} for t in tickers]
-                 + [{"ticker": "AAA", "year": 2025, "quarter": "1Q",
-                     "account": "net_income", "amount": 5.0}]
-                 ).to_parquet(path, index=False)
+KEYS = ["ticker", "year", "account"]
 
 
-def test_수집이_부실하면_기존_EPS를_안_지운다(tmp_path):
-    # 2026-08-24: 야후 차단으로 1,223종목만 수집된 채 지우기가 실행돼 4,325종목의
-    # EPS가 사라졌다. 오래된 값이라도 없는 것보다는 낫다.
+def _기존(path, eps_tickers):
+    rows = [{"ticker": t, "year": 2025, "account": "eps", "amount": 1.0}
+            for t in eps_tickers]
+    rows.append({"ticker": "AAA", "year": 2025, "account": "net_income",
+                 "amount": 5.0})
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+
+def _eps(path):
+    d = pd.read_parquet(path)
+    e = d[d.account == "eps"]
+    return dict(zip(e.ticker, e.amount))
+
+
+def test_처리하지_않은_종목은_손대지_않는다(tmp_path):
+    # 2026-08-24: 전체를 지우고 덮는 방식이라 야후 차단으로 못 받은 4,325종목의
+    # EPS가 사라졌다. 오래된 값이라도 없는 것보다 낫다.
     p = tmp_path / "annual.parquet"
-    _eps_parquet(p, [f"T{i}" for i in range(100)])
-    with pytest.raises(SystemExit) as exc:
-        F.purge_eps(p, {f"T{i}" for i in range(50)})      # 50%
-    assert "지우지 않고" in str(exc.value)
-    after = pd.read_parquet(p)
-    assert after[after.account == "eps"].ticker.nunique() == 100
+    _기존(p, ["AAA", "BBB", "CCC"])
+    새 = [{"ticker": "AAA", "year": 2025, "account": "eps", "amount": 9.0}]
+    F.write_eps(p, 새, {"AAA"}, KEYS)
+
+    got = _eps(p)
+    assert got["AAA"] == 9.0          # 처리했으니 갈아 끼운다
+    assert got["BBB"] == 1.0          # 못 받았으니 그대로 둔다
+    assert got["CCC"] == 1.0
 
 
-def test_커버리지가_충분하면_지운다(tmp_path):
+def test_EPS_태그가_없는_종목은_기존_값을_지운다(tmp_path):
+    # 야후가 만든 계산값을 남기면 그것이 그대로 판정에 쓰인다. 폴백을 두지 않기로 했다.
     p = tmp_path / "annual.parquet"
-    _eps_parquet(p, [f"T{i}" for i in range(100)])
-    removed = F.purge_eps(p, {f"T{i}" for i in range(90)})     # 90%
-    assert removed == 100
-    after = pd.read_parquet(p)
-    assert (after.account == "eps").sum() == 0
-    assert (after.account == "net_income").sum() == 1     # 다른 계정은 안 건드린다
+    _기존(p, ["AAA", "BBB"])
+    F.write_eps(p, [], {"BBB"}, KEYS)      # BBB는 응답을 받았으나 태그가 없었다
+
+    got = _eps(p)
+    assert "BBB" not in got
+    assert got["AAA"] == 1.0
 
 
-def test_기존_EPS가_없으면_그냥_진행한다(tmp_path):
+def test_다른_계정은_건드리지_않는다(tmp_path):
     p = tmp_path / "annual.parquet"
-    pd.DataFrame([{"ticker": "AAA", "year": 2025, "quarter": "1Q",
-                   "account": "net_income", "amount": 5.0}]).to_parquet(p, index=False)
-    assert F.purge_eps(p, {"AAA"}) == 0
+    _기존(p, ["AAA"])
+    F.write_eps(p, [{"ticker": "AAA", "year": 2025, "account": "eps",
+                     "amount": 9.0}], {"AAA"}, KEYS)
+    d = pd.read_parquet(p)
+    assert (d.account == "net_income").sum() == 1
 
 
-def test_파일이_없으면_예외가_아니다(tmp_path):
-    assert F.purge_eps(tmp_path / "없음.parquet", {"AAA"}) == 0
+def test_파일이_없으면_새로_만든다(tmp_path):
+    p = tmp_path / "annual.parquet"
+    F.write_eps(p, [{"ticker": "AAA", "year": 2025, "account": "eps",
+                     "amount": 9.0}], {"AAA"}, KEYS)
+    assert _eps(p) == {"AAA": 9.0}
+
+
+def test_같은_키가_겹치면_새_값이_이긴다(tmp_path):
+    p = tmp_path / "annual.parquet"
+    _기존(p, ["AAA"])
+    새 = [{"ticker": "AAA", "year": 2025, "account": "eps", "amount": 2.0},
+          {"ticker": "AAA", "year": 2025, "account": "eps", "amount": 3.0}]
+    F.write_eps(p, 새, {"AAA"}, KEYS)
+    d = pd.read_parquet(p)
+    assert len(d[(d.ticker == "AAA") & (d.account == "eps")]) == 1

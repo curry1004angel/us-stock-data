@@ -26,8 +26,6 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fetch_financials import update_parquet  # noqa: E402
-
 DATA = Path("data")
 SEC_BASE = "https://data.sec.gov/api/xbrl/companyconcept"
 
@@ -63,11 +61,7 @@ SPLIT_SLEEP = 0.2
 SPLIT_RETRIES = 3
 SPLIT_BACKOFF = 4.0        # 1초, 4초, 16초
 
-# 분할 이력을 못 받은 종목은 건너뛰므로, 실패가 많으면 커버리지가 통째로 무너진다.
-# 조용히 진행해 지우고 덮느니 소리내어 실패한다.
-SPLIT_FAIL_MAX = 0.05
-# 갈아엎기 전 확인. 새로 받은 종목 수가 기존의 이 비율에 못 미치면 아무것도 안 지운다.
-PURGE_MIN_COVERAGE = 0.80
+SPLIT_RETRY_SLEEP = 0.5    # 실패분 재시도는 한 줄로 더 천천히 간다
 
 
 def load_tickers(path):
@@ -255,33 +249,36 @@ def net_income_by_year(annual_df, ticker):
     return dict(zip(d["year"], d["amount"]))
 
 
-def purge_eps(path, new_tickers):
-    """기존 eps 행을 지운다. 새 데이터의 커버리지가 부족하면 지우지 않는다.
+def write_eps(path, new_rows, processed, keys):
+    """처리한 종목의 eps만 새 값으로 갈아 끼운다.
 
-    야후 폴백을 두지 않기로 했으므로(틀린 값이 맞는 값처럼 보이는 것이 이 문제의
-    핵심이었다), SEC가 못 채운 자리는 비어 있어야 한다. 남겨두면 야후가 만든
-    계산값이 그대로 판정에 쓰인다. 전 종목 실행에서만 부른다 — 표본 실행에서
-    지우면 건드리지 않은 종목의 EPS까지 날아간다.
+    전체를 지우고 덮으면 이번에 못 받은 종목이 값 없음이 된다. 2026-08-24에
+    야후 차단으로 실제로 그렇게 4,325종목의 EPS가 사라졌다. 처리하지 못한
+    종목은 손대지 않는다 — 오래된 값이라도 없는 것보다 낫다.
 
-    커버리지 확인이 핵심이다. 2026-08-24에 야후 차단으로 1,223종목만 수집된
-    채로 지우기가 실행돼 4,325종목의 EPS가 사라졌다. 수집이 부실하면 기존
-    데이터가 오래됐을지언정 없는 것보다 낫다.
+    `processed`는 SEC 응답까지 받아본 종목이다. 주당이익 태그가 아예 없는
+    종목도 여기 들어가고, 그 종목의 기존 eps는 지워진다. 야후가 만든 계산값을
+    남겨두면 그것이 그대로 판정에 쓰이기 때문이다(폴백을 두지 않기로 한 결정).
     """
-    if not path.exists():
-        return 0
-    df = pd.read_parquet(path)
-    old = df.loc[df["account"] == "eps", "ticker"].nunique()
-    if old and len(new_tickers) < old * PURGE_MIN_COVERAGE:
-        raise SystemExit(
-            f"{path.name}: 새로 받은 {len(new_tickers)}종목이 기존 {old}종목의 "
-            f"{PURGE_MIN_COVERAGE:.0%}에 못 미친다. 지우지 않고 멈춘다.")
-    before = len(df)
-    df = df[df["account"] != "eps"]
-    removed = before - len(df)
-    df.to_parquet(path, index=False, compression="snappy")
-    print(f"  {path.name}: 기존 eps {removed}행 제거 "
-          f"(기존 {old}종목 → 신규 {len(new_tickers)}종목)", flush=True)
-    return removed
+    existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+    if len(existing):
+        stale = (existing["account"] == "eps") & existing["ticker"].isin(processed)
+        kept = existing[~stale]
+        replaced = int(stale.sum())
+    else:
+        kept, replaced = existing, 0
+
+    new_df = pd.DataFrame(new_rows)
+    if len(kept) and len(new_df):
+        new_df = new_df[[c for c in new_df.columns if c in kept.columns]]
+    combined = pd.concat([kept, new_df], ignore_index=True)
+    combined = combined.drop_duplicates(subset=keys, keep="last")
+    combined = combined.sort_values(keys).reset_index(drop=True)
+    combined.to_parquet(path, index=False, compression="snappy")
+
+    eps = combined[combined["account"] == "eps"]
+    print(f"  {path.name}: 기존 eps {replaced}행 교체, 신규 {len(new_df)}행 "
+          f"→ eps {eps['ticker'].nunique()}종목 / 총 {len(combined)}행", flush=True)
 
 
 def main():
@@ -310,20 +307,24 @@ def main():
             splits_by_ticker[futures[fut]] = fut.result()
             if n % 1000 == 0:
                 print(f"    {n}/{len(tickers)}", flush=True)
+    failed = [tk for tk, v in splits_by_ticker.items() if v is None]
+    print(f"  분할 이력 1차 완료 (실패 {len(failed)}종목)", flush=True)
+    # 실패분은 한 줄로 천천히 다시 받는다. 병렬로 몰아치다 막힌 것이라 혼자
+    # 다시 물으면 대부분 온다. 여기서 건지지 못하면 그 종목은 손대지 않는다.
+    if failed:
+        print(f"  실패분 {len(failed)}종목 재시도 중...", flush=True)
+        for n, tk in enumerate(failed, 1):
+            splits_by_ticker[tk] = fetch_splits(tk)
+            time.sleep(SPLIT_RETRY_SLEEP)
+            if n % 200 == 0:
+                print(f"    {n}/{len(failed)}", flush=True)
     split_fail = sum(1 for v in splits_by_ticker.values() if v is None)
-    print(f"  분할 이력 완료 (조회 실패 {split_fail}종목)", flush=True)
-    if split_fail > len(tickers) * SPLIT_FAIL_MAX:
-        # 여기서 계속 가면 실패한 종목을 전부 건너뛴 채 기존 EPS를 지우고 덮는다.
-        # 2026-08-24에 실제로 그렇게 4,325종목의 EPS가 사라졌다.
-        raise SystemExit(
-            f"분할 이력 조회 실패가 {split_fail}/{len(tickers)}종목으로 너무 많다 "
-            f"(허용 {SPLIT_FAIL_MAX:.0%}). 야후가 막은 것으로 보인다. "
-            f"아무것도 쓰지 않고 멈춘다.")
+    print(f"  분할 이력 완료 (최종 실패 {split_fail}종목)", flush=True)
 
     session = requests.Session()
     q_all, a_all = [], []
     ok = no_cik = no_tag = no_splits = dropped = 0
-    errors, dropped_detail = [], []
+    errors, dropped_detail, processed = [], [], set()
     for i, tk in enumerate(tickers, 1):
         # 종목 하나의 예외로 전체가 죽으면 여기까지 받은 수천 종목이 통째로
         # 버려진다(저장은 루프가 끝난 뒤에 한다). 티커와 예외는 반드시 남긴다.
@@ -338,6 +339,9 @@ def main():
                 no_splits += 1
                 continue
             facts = fetch_facts(cik, session)
+            # SEC 응답까지 받아본 종목이다. 주당이익 태그가 없어도 여기 넣는다 —
+            # 그 종목의 기존 야후 값은 지워야 한다(폴백을 두지 않기로 한 결정).
+            processed.add(tk)
             if not facts:
                 no_tag += 1
                 continue
@@ -367,17 +371,12 @@ def main():
     for tk, bad in dropped_detail[:40]:
         print(f"  폐기 {tk}: {bad}", flush=True)
 
+    print(f"eps를 갈아 끼울 종목 {len(processed)}종목 / "
+          f"손대지 않을 종목 {len(tickers) - len(processed)}종목", flush=True)
+
     path_q = DATA / "financials/quarterly.parquet"
-    if not args.limit:
-        # 전 종목 실행일 때만 갈아엎는다. 야후가 남긴 계산값이 섞여 있으면
-        # SEC가 못 채운 종목이 여전히 틀린 값으로 판정된다.
-        purge_eps(path_q, {r["ticker"] for r in q_all})
-        purge_eps(path_a, {r["ticker"] for r in a_all})
-    if q_all:
-        update_parquet(path_q, pd.DataFrame(q_all),
-                       ["ticker", "year", "quarter", "account"])
-    if a_all:
-        update_parquet(path_a, pd.DataFrame(a_all), ["ticker", "year", "account"])
+    write_eps(path_q, q_all, processed, ["ticker", "year", "quarter", "account"])
+    write_eps(path_a, a_all, processed, ["ticker", "year", "account"])
 
 
 if __name__ == "__main__":
