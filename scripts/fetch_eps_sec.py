@@ -55,7 +55,19 @@ SHARE_OUTLIER_MULT = 10.0
 SHARE_GUARD_MIN_YEARS = 4  # 연도가 적으면 중앙값 자체를 못 믿는다
 
 SEC_SLEEP = 0.11           # SEC 권고 초당 10건
-SPLIT_WORKERS = 6          # yfinance 분할 이력 병렬 수. 야후 차단을 피해 낮게 잡는다
+
+# 야후 분할 이력. 6워커로 5,919종목을 86초에 긁었다가 4,365종목이 차단당했다
+# (2026-08-24). 워커를 줄이고 간격을 두고 재시도한다.
+SPLIT_WORKERS = 3
+SPLIT_SLEEP = 0.2
+SPLIT_RETRIES = 3
+SPLIT_BACKOFF = 4.0        # 1초, 4초, 16초
+
+# 분할 이력을 못 받은 종목은 건너뛰므로, 실패가 많으면 커버리지가 통째로 무너진다.
+# 조용히 진행해 지우고 덮느니 소리내어 실패한다.
+SPLIT_FAIL_MAX = 0.05
+# 갈아엎기 전 확인. 새로 받은 종목 수가 기존의 이 비율에 못 미치면 아무것도 안 지운다.
+PURGE_MIN_COVERAGE = 0.80
 
 
 def load_tickers(path):
@@ -156,12 +168,20 @@ def fetch_splits(ticker):
     """
     import yfinance as yf          # 테스트에서 import만 할 때의 부담을 줄인다
 
-    try:
-        raw = yf.Ticker(str(ticker).replace(".", "-")).splits
-    except Exception:  # noqa: BLE001
-        return None
+    raw = None
+    for attempt in range(SPLIT_RETRIES):
+        try:
+            raw = yf.Ticker(str(ticker).replace(".", "-")).splits
+            break
+        except Exception:  # noqa: BLE001
+            # 야후는 과하게 부르면 막는다. 한 번 실패했다고 포기하면 그 종목이
+            # 통째로 빠지고, 갈아엎기와 겹치면 EPS가 사라진다.
+            if attempt == SPLIT_RETRIES - 1:
+                return None
+            time.sleep(SPLIT_BACKOFF ** attempt)
     if raw is None:
         return None
+    time.sleep(SPLIT_SLEEP)
     return {pd.Timestamp(d).tz_localize(None): float(r)
             for d, r in raw.items() if is_split(float(r))}
 
@@ -235,22 +255,32 @@ def net_income_by_year(annual_df, ticker):
     return dict(zip(d["year"], d["amount"]))
 
 
-def purge_eps(path):
-    """기존 eps 행을 전부 지운다.
+def purge_eps(path, new_tickers):
+    """기존 eps 행을 지운다. 새 데이터의 커버리지가 부족하면 지우지 않는다.
 
     야후 폴백을 두지 않기로 했으므로(틀린 값이 맞는 값처럼 보이는 것이 이 문제의
     핵심이었다), SEC가 못 채운 자리는 비어 있어야 한다. 남겨두면 야후가 만든
     계산값이 그대로 판정에 쓰인다. 전 종목 실행에서만 부른다 — 표본 실행에서
     지우면 건드리지 않은 종목의 EPS까지 날아간다.
+
+    커버리지 확인이 핵심이다. 2026-08-24에 야후 차단으로 1,223종목만 수집된
+    채로 지우기가 실행돼 4,325종목의 EPS가 사라졌다. 수집이 부실하면 기존
+    데이터가 오래됐을지언정 없는 것보다 낫다.
     """
     if not path.exists():
         return 0
     df = pd.read_parquet(path)
+    old = df.loc[df["account"] == "eps", "ticker"].nunique()
+    if old and len(new_tickers) < old * PURGE_MIN_COVERAGE:
+        raise SystemExit(
+            f"{path.name}: 새로 받은 {len(new_tickers)}종목이 기존 {old}종목의 "
+            f"{PURGE_MIN_COVERAGE:.0%}에 못 미친다. 지우지 않고 멈춘다.")
     before = len(df)
     df = df[df["account"] != "eps"]
     removed = before - len(df)
     df.to_parquet(path, index=False, compression="snappy")
-    print(f"  {path.name}: 기존 eps {removed}행 제거", flush=True)
+    print(f"  {path.name}: 기존 eps {removed}행 제거 "
+          f"(기존 {old}종목 → 신규 {len(new_tickers)}종목)", flush=True)
     return removed
 
 
@@ -282,6 +312,13 @@ def main():
                 print(f"    {n}/{len(tickers)}", flush=True)
     split_fail = sum(1 for v in splits_by_ticker.values() if v is None)
     print(f"  분할 이력 완료 (조회 실패 {split_fail}종목)", flush=True)
+    if split_fail > len(tickers) * SPLIT_FAIL_MAX:
+        # 여기서 계속 가면 실패한 종목을 전부 건너뛴 채 기존 EPS를 지우고 덮는다.
+        # 2026-08-24에 실제로 그렇게 4,325종목의 EPS가 사라졌다.
+        raise SystemExit(
+            f"분할 이력 조회 실패가 {split_fail}/{len(tickers)}종목으로 너무 많다 "
+            f"(허용 {SPLIT_FAIL_MAX:.0%}). 야후가 막은 것으로 보인다. "
+            f"아무것도 쓰지 않고 멈춘다.")
 
     session = requests.Session()
     q_all, a_all = [], []
@@ -334,8 +371,8 @@ def main():
     if not args.limit:
         # 전 종목 실행일 때만 갈아엎는다. 야후가 남긴 계산값이 섞여 있으면
         # SEC가 못 채운 종목이 여전히 틀린 값으로 판정된다.
-        purge_eps(path_q)
-        purge_eps(path_a)
+        purge_eps(path_q, {r["ticker"] for r in q_all})
+        purge_eps(path_a, {r["ticker"] for r in a_all})
     if q_all:
         update_parquet(path_q, pd.DataFrame(q_all),
                        ["ticker", "year", "quarter", "account"])

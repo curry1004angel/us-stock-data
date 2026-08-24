@@ -191,3 +191,46 @@ def test_진짜_빈_칸은_빠진다(tmp_path):
     p.write_text("ticker,name\nAAPL,Apple\n,빈칸\n  ,공백\nMSFT,Microsoft\n",
                  encoding="utf-8-sig")
     assert F.load_tickers(p) == ["AAPL", "MSFT"]
+
+
+# --- 갈아엎기 가드 ---
+
+def _eps_parquet(path, tickers):
+    pd.DataFrame([{"ticker": t, "year": 2025, "quarter": "1Q",
+                   "account": "eps", "amount": 1.0} for t in tickers]
+                 + [{"ticker": "AAA", "year": 2025, "quarter": "1Q",
+                     "account": "net_income", "amount": 5.0}]
+                 ).to_parquet(path, index=False)
+
+
+def test_수집이_부실하면_기존_EPS를_안_지운다(tmp_path):
+    # 2026-08-24: 야후 차단으로 1,223종목만 수집된 채 지우기가 실행돼 4,325종목의
+    # EPS가 사라졌다. 오래된 값이라도 없는 것보다는 낫다.
+    p = tmp_path / "annual.parquet"
+    _eps_parquet(p, [f"T{i}" for i in range(100)])
+    with pytest.raises(SystemExit) as exc:
+        F.purge_eps(p, {f"T{i}" for i in range(50)})      # 50%
+    assert "지우지 않고" in str(exc.value)
+    after = pd.read_parquet(p)
+    assert after[after.account == "eps"].ticker.nunique() == 100
+
+
+def test_커버리지가_충분하면_지운다(tmp_path):
+    p = tmp_path / "annual.parquet"
+    _eps_parquet(p, [f"T{i}" for i in range(100)])
+    removed = F.purge_eps(p, {f"T{i}" for i in range(90)})     # 90%
+    assert removed == 100
+    after = pd.read_parquet(p)
+    assert (after.account == "eps").sum() == 0
+    assert (after.account == "net_income").sum() == 1     # 다른 계정은 안 건드린다
+
+
+def test_기존_EPS가_없으면_그냥_진행한다(tmp_path):
+    p = tmp_path / "annual.parquet"
+    pd.DataFrame([{"ticker": "AAA", "year": 2025, "quarter": "1Q",
+                   "account": "net_income", "amount": 5.0}]).to_parquet(p, index=False)
+    assert F.purge_eps(p, {"AAA"}) == 0
+
+
+def test_파일이_없으면_예외가_아니다(tmp_path):
+    assert F.purge_eps(tmp_path / "없음.parquet", {"AAA"}) == 0
