@@ -417,30 +417,56 @@ def _행(*years):
             for y in years]
 
 
-def test_계열이_여러_해_뒤처지면_건너뛴다():
+def _분기행(*pairs):
+    return [{"ticker": "AAA", "year": y, "quarter": q, "account": "eps",
+             "amount": 1.0} for y, q in pairs]
+
+
+def test_연간_계열이_여러_해_뒤처지면_건너뛴다():
     # Ares 실측: SEC에는 2019년까지만 있고 기존에는 2025년까지 있다.
     # 덮으면 최신 연도가 사라져 A항목이 판정 불가가 된다.
-    assert F.too_stale(_행(2014, 2019), 2025) is True
+    assert F.annual_too_stale(_행(2014, 2019), (2025, 0)) is True
 
 
-def test_한_해_차이는_제출_시기다():
+def test_연간은_한_해_차이를_봐준다():
     # National Grid는 3월 결산이라 기존이 한 해 앞설 수 있다. 정상이다.
-    assert F.too_stale(_행(2016, 2025), 2026) is False
+    assert F.annual_too_stale(_행(2016, 2025), (2026, 0)) is False
 
 
-def test_새_계열이_더_최신이면_건너뛰지_않는다():
-    assert F.too_stale(_행(2007, 2025), 2025) is False
+def test_연간_계열이_더_최신이면_건너뛰지_않는다():
+    assert F.annual_too_stale(_행(2007, 2025), (2025, 0)) is False
+
+
+def test_분기는_한_칸도_안_봐준다():
+    # Northern Trust 실측: 기존 2026 2Q, SEC는 2026 1Q까지다. 덮으면
+    # C항목이 한 분기 낡은 값으로 판정된다.
+    assert F.quarterly_too_stale(_분기행((2026, "1Q")), (2026, 2)) is True
+
+
+def test_분기가_같으면_갈아_끼운다():
+    assert F.quarterly_too_stale(_분기행((2026, "2Q")), (2026, 2)) is False
+
+
+def test_분기가_더_최신이면_갈아_끼운다():
+    assert F.quarterly_too_stale(_분기행((2026, "3Q")), (2026, 2)) is False
+
+
+def test_해가_바뀌어도_분기_순서를_지킨다():
+    assert F.quarterly_too_stale(_분기행((2025, "4Q")), (2026, 1)) is True
+    assert F.quarterly_too_stale(_분기행((2026, "1Q")), (2025, 4)) is False
 
 
 def test_기존_값이_없으면_가드를_안_건다():
-    assert F.too_stale(_행(2019), None) is False
+    assert F.annual_too_stale(_행(2019), None) is False
+    assert F.quarterly_too_stale(_분기행((2020, "1Q")), None) is False
 
 
 def test_새_행이_없으면_가드를_안_건다():
-    assert F.too_stale([], 2025) is False
+    assert F.annual_too_stale([], (2025, 0)) is False
+    assert F.quarterly_too_stale([], (2026, 2)) is False
 
 
-def test_최신_연도는_eps만_본다(tmp_path):
+def test_최신_기간은_eps만_본다():
     # net_income은 eps보다 최신일 수 있다. 그걸 기준으로 삼으면 멀쩡한
     # SEC 계열이 뒤처졌다고 잘못 판정된다.
     df = pd.DataFrame([
@@ -448,9 +474,21 @@ def test_최신_연도는_eps만_본다(tmp_path):
         {"ticker": "AAA", "year": 2025, "account": "net_income", "amount": 5.0},
         {"ticker": "BBB", "year": 2025, "account": "eps", "amount": 2.0},
     ])
-    assert F.last_eps_year(df, "AAA") == 2021
-    assert F.last_eps_year(df, "CCC") is None
-    assert F.last_eps_year(None, "AAA") is None
+    assert F.last_eps_period(df, "AAA") == (2021, 0)
+    assert F.last_eps_period(df, "CCC") is None
+    assert F.last_eps_period(None, "AAA") is None
+
+
+def test_분기_파일에서는_분기까지_본다():
+    df = pd.DataFrame([
+        {"ticker": "AAA", "year": 2026, "quarter": "1Q", "account": "eps",
+         "amount": 1.0},
+        {"ticker": "AAA", "year": 2026, "quarter": "2Q", "account": "eps",
+         "amount": 2.0},
+        {"ticker": "AAA", "year": 2026, "quarter": "3Q", "account": "net_income",
+         "amount": 9.0},
+    ])
+    assert F.last_eps_period(df, "AAA") == (2026, 2)
 
 
 def test_연간만_받은_종목의_분기는_안_지운다(tmp_path):

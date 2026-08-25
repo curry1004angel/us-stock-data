@@ -75,7 +75,9 @@ SPLIT_DENOMS = (1, 2, 4)
 SHARE_OUTLIER_MULT = 10.0
 SHARE_GUARD_MIN_YEARS = 4  # 연도가 적으면 중앙값 자체를 못 믿는다
 
-# SEC 계열의 최신 연도가 기존보다 이만큼 뒤처지면 갈아 끼우지 않는다.
+QUARTER_ORDER = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4}
+
+# SEC 연간 계열의 최신 연도가 기존보다 이만큼 뒤처지면 갈아 끼우지 않는다.
 # 한 해 차이는 제출 시기 문제라 정상이다. 여러 해가 비면 태깅이 끊긴 것이고
 # (Ares는 2018년 법인 전환 뒤로 없다), 그걸로 덮으면 최신 연도가 사라져
 # A항목이 판정 불가가 된다. 틀릴 수 있는 값이 못 쓰는 값보다 낫다.
@@ -342,19 +344,52 @@ def drop_scale_outliers(a_rows, net_income):
     return [r for r in a_rows if r["year"] not in bad], sorted(bad)
 
 
-def last_eps_year(df, ticker):
-    """기존 파일에 든 이 종목 eps의 최신 연도. 없으면 None."""
+def newest_period(rows):
+    """행 목록의 가장 최근 기간. 분기 행이면 (연도, 분기), 연간이면 (연도, 0)."""
+    return max((r["year"], QUARTER_ORDER.get(r.get("quarter"), 0)) for r in rows)
+
+
+def last_eps_period(df, ticker):
+    """기존 파일에 든 이 종목 eps의 가장 최근 기간. 없으면 None."""
     if df is None or df.empty:
         return None
     d = df[(df["ticker"] == ticker) & (df["account"] == "eps")]
-    return int(d["year"].max()) if len(d) else None
+    if not len(d):
+        return None
+    if "quarter" in d.columns:
+        return max((int(y), QUARTER_ORDER.get(q, 0))
+                   for y, q in zip(d["year"], d["quarter"]))
+    return (int(d["year"].max()), 0)
 
 
-def too_stale(rows, last_year):
-    """새 계열이 기존보다 STALE_YEARS 이상 뒤처지는가."""
-    if not rows or last_year is None:
+def annual_too_stale(rows, last):
+    """연간 계열이 기존보다 STALE_YEARS 이상 뒤처지는가.
+
+    한 해 차이는 건드린다. National Grid처럼 3월 결산이면 제출 시기 때문에
+    기존이 한 해 앞설 수 있고 그건 정상이다.
+    """
+    if not rows or last is None:
         return False
-    return max(r["year"] for r in rows) <= last_year - STALE_YEARS
+    return newest_period(rows)[0] <= last[0] - STALE_YEARS
+
+
+def quarterly_too_stale(rows, last):
+    """분기 계열이 한 칸이라도 뒤로 밀리는가.
+
+    연간과 달리 한 분기도 못 봐준다. C항목이 보는 것은 최근 분기 EPS
+    증가율이라 최신 분기가 뒤로 밀리면 판정 자체가 낡는다.
+
+    밀리는 이유는 둘이고 둘 다 우리가 손쓸 수 없다.
+      - 회사가 그 분기에 EarningsPerShareBasic을 안 태깅한다. Northern Trust는
+        2026년 2분기에 EarningsPerShareBasicUndistributed만 냈는데 그건 두 클래스
+        배분용이라 총 EPS가 아니다.
+      - companyfacts에 그 제출본이 아직 없다. Southern Company는 2026-06-08
+        제출본이 마지막이다.
+    둘 다 시간이 지나면 풀린다. 그때까지 기존 값을 지킨다.
+    """
+    if not rows or last is None:
+        return False
+    return newest_period(rows) < last
 
 
 def net_income_by_year(annual_df, ticker):
@@ -493,10 +528,10 @@ def main():
             if bad:
                 dropped += len(bad)
                 dropped_detail.append((tk, bad))
-            if too_stale(a_rows, last_eps_year(existing_annual, tk)):
+            if annual_too_stale(a_rows, last_eps_period(existing_annual, tk)):
                 stale_a.append(tk)
                 a_rows = []
-            if too_stale(q_rows, last_eps_year(existing_quarterly, tk)):
+            if quarterly_too_stale(q_rows, last_eps_period(existing_quarterly, tk)):
                 stale_q.append(tk)
                 q_rows = []
             if not q_rows and not a_rows:
