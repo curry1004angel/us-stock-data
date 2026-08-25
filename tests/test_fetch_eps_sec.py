@@ -204,64 +204,119 @@ class FakeResponse:
         return self._payload
 
 
-def _units(n, tag="EarningsPerShareBasic"):
-    return {"units": {"USD/shares": [
+def _units(n, unit="USD/shares"):
+    return {"units": {unit: [
         {"start": "2024-01-01", "end": "2024-12-31", "val": float(i),
          "filed": "2025-02-01", "form": "10-K"} for i in range(n)]}}
 
 
-def _facts(n, taxonomy="us-gaap", tag="EarningsPerShareBasic"):
-    return {"facts": {taxonomy: {tag: _units(n)}}}
+def _facts(*specs):
+    """(분류, 태그, 건수[, 단위]) 여러 개로 companyfacts 응답을 만든다."""
+    out = {}
+    for spec in specs:
+        taxonomy, tag, n = spec[0], spec[1], spec[2]
+        unit = spec[3] if len(spec) > 3 else "USD/shares"
+        out.setdefault(taxonomy, {})[tag] = _units(n, unit)
+    return {"facts": out}
 
 
-def test_주_태그에_값이_있으면_바로_쓴다():
-    calls = []
-
+def _fake(payload, status=200):
     def get(url, **kw):
-        calls.append(url)
-        return FakeResponse(200, _units(3))
+        return FakeResponse(status, payload)
+    return type("S", (), {"get": staticmethod(get)})
 
-    facts, status = F.fetch_facts("0000320193", type("S", (), {"get": staticmethod(get)}))
+
+def _fact(start, end, val, tag_rank=None, filed="2025-02-01", form="10-K"):
+    f = {"start": start, "end": end, "val": val, "filed": filed, "form": form}
+    if tag_rank is not None:
+        f["_rank"] = tag_rank
+    return f
+
+
+def test_여러_태그를_합친다():
+    # Ares 실측: 유닛당 태그가 2014~2019, 주당 태그가 2019~2025를 덮는다.
+    # 한 태그만 고르면 나머지 기간이 통째로 사라진다.
+    payload = _facts(("us-gaap", "EarningsPerShareBasic", 6),
+                     ("us-gaap", "IncomeLossFromContinuingOperationsPerBasicShare", 56))
+    facts, status = F.fetch_facts("0001831097", _fake(payload))
+    assert status == "ok" and len(facts) == 62
+
+
+def test_같은_기간이_겹치면_우선순위가_앞선_태그를_쓴다():
+    # 계속사업 기준과 총액 기준이 한 계열에 섞이면 그 해만 성격이 달라진다.
+    rank_basic = F.TAGS.index(("us-gaap", "EarningsPerShareBasic"))
+    rank_diluted = F.TAGS.index(("us-gaap", "EarningsPerShareDiluted"))
+    facts = [_fact("2024-01-01", "2024-12-31", 9.0, rank_diluted),
+             _fact("2024-01-01", "2024-12-31", 7.0, rank_basic)]
+    _q, ann = F.build_rows("AAA", facts)
+    assert [r["amount"] for r in ann] == [7.0]
+
+
+def test_한_태그만_덮는_기간은_그대로_들어온다():
+    rank_basic = F.TAGS.index(("us-gaap", "EarningsPerShareBasic"))
+    rank_lp = F.TAGS.index(
+        ("us-gaap", "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax"))
+    facts = [_fact("2018-01-01", "2018-12-31", 2.0, rank_lp),
+             _fact("2024-01-01", "2024-12-31", 7.0, rank_basic)]
+    _q, ann = F.build_rows("AAA", facts)
+    assert sorted(r["year"] for r in ann) == [2018, 2024]
+
+
+def test_비USD_단위도_받는다():
+    # ASML은 EUR/shares, Ambev는 BRL/shares로 낸다. USD만 받으면 이들이
+    # 미공시로 분류돼 기존 값까지 지워진다.
+    payload = _facts(("us-gaap", "EarningsPerShareBasic", 51, "EUR/shares"))
+    facts, status = F.fetch_facts("0000937966", _fake(payload))
+    assert status == "ok" and len(facts) == 51
+
+
+def test_USD가_있으면_다른_통화보다_먼저다():
+    units = {"units": {"MXN/shares": _units(30)["units"]["USD/shares"],
+                       "USD/shares": _units(4)["units"]["USD/shares"]}}
+    assert len(F.pick_unit(units["units"])) == 4
+
+
+def test_주당이_아닌_단위는_안_쓴다():
+    assert F.pick_unit({"USD": [{"val": 1}], "shares": [{"val": 2}]}) == []
+
+
+def test_합자회사_유닛당_태그도_찾는다():
+    # AB·ARES·ARLP는 주당이 아니라 유닛당으로 낸다.
+    tag = "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax"
+    payload = _facts(("us-gaap", tag, 114))
+    facts, status = F.fetch_facts("0001176948", _fake(payload))
+    assert status == "ok" and len(facts) == 114
+
+
+def test_정기보고서가_아닌_사실은_안_모은다():
+    payload = {"facts": {"us-gaap": {
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [
+            {"start": "2024-01-01", "end": "2024-12-31", "val": 1.0,
+             "filed": "2025-02-01", "form": "8-K"} for _ in range(99)]}},
+        "EarningsPerShareBasic": _units(3)}}}
+    facts, status = F.fetch_facts("0000000004", _fake(payload))
     assert status == "ok" and len(facts) == 3
-    assert len(calls) == 1
 
 
-def test_주_태그가_200에_0건이면_보조_태그를_믿지_않는다():
-    # ACHC 실측: 주 태그가 200에 0건이고 보조 태그에 12건뿐인데, 정작
-    # companyfacts에는 주 태그가 254건 있다. 보조 태그가 이기면 계열이 잘린다.
-    seen = []
-
-    def get(url, **kw):
-        seen.append(url)
-        if "companyfacts" in url:
-            return FakeResponse(200, _facts(254))
-        return FakeResponse(200, _units(0))
-
-    facts, status = F.fetch_facts("0001520697", type("S", (), {"get": staticmethod(get)}))
-    assert status == "ok" and len(facts) == 254
-    # 주 태그 한 번 보고 곧장 companyfacts로 갔다. 보조 태그는 묻지 않는다.
-    assert len(seen) == 2 and "companyfacts" in seen[1]
+def test_태그는_있는데_쓸_사실이_없으면_미공시가_아니다():
+    # 미공시로 뭉개면 기존 값이 지워진다. 우리가 못 건진 것과 회사가 안 낸
+    # 것은 다르다. 여기서는 손대지 않고 넘어가야 한다.
+    payload = {"facts": {"us-gaap": {"EarningsPerShareBasic": {"units": {
+        "USD/shares": [{"start": "2024-01-01", "end": "2024-12-31", "val": 1.0,
+                        "filed": "2025-02-01", "form": "8-K"}]}}}}}
+    facts, status = F.fetch_facts("0000000006", _fake(payload))
+    assert status == "ok" and facts == []
 
 
-def test_주_태그가_404면_보조_태그를_쓴다():
-    # ABNB 실측: EarningsPerShareBasic이 404고 계속사업 주당이익만 있다.
-    def get(url, **kw):
-        if "EarningsPerShareBasic.json" in url:
-            return FakeResponse(404)
-        if "IncomeLossFromContinuingOperationsPerBasicShare" in url:
-            return FakeResponse(200, _units(68))
-        return FakeResponse(404)
-
-    facts, status = F.fetch_facts("0001559720", type("S", (), {"get": staticmethod(get)}))
-    assert status == "ok" and len(facts) == 68
-
-
-def test_전부_404면_주당이익_미공시다():
+def test_제출_이력이_없으면_주당이익_미공시다():
     # 이때만 기존 값을 지운다. 폐쇄형 펀드·SPAC이 여기 해당한다.
-    def get(url, **kw):
-        return FakeResponse(404)
+    facts, status = F.fetch_facts("0000000001", _fake(None, status=404))
+    assert status == "none" and facts == []
 
-    facts, status = F.fetch_facts("0000000001", type("S", (), {"get": staticmethod(get)}))
+
+def test_사실은_받았는데_EPS_태그가_없으면_미공시다():
+    payload = {"facts": {"us-gaap": {"Assets": {"units": {"USD": [{"val": 1}]}}}}}
+    facts, status = F.fetch_facts("0000000005", _fake(payload))
     assert status == "none" and facts == []
 
 
@@ -274,26 +329,14 @@ def test_조회가_실패하면_미공시로_보지_않는다():
     assert status == "fail" and facts == []
 
 
-def test_일부_실패하고_나머지가_404면_실패로_본다():
-    # 한 태그라도 조회에 실패했으면 "안 쓰는 회사"라고 단정할 수 없다.
-    def get(url, **kw):
-        if "companyfacts" in url:
-            return FakeResponse(404)
-        if "EarningsPerShareBasic.json" in url:
-            return FakeResponse(503)
-        return FakeResponse(404)
-
-    facts, status = F.fetch_facts("0000320193", type("S", (), {"get": staticmethod(get)}))
-    assert status == "fail"
+def test_서버_오류는_실패로_본다():
+    facts, status = F.fetch_facts("0000320193", _fake(None, status=503))
+    assert status == "fail" and facts == []
 
 
 def test_ifrs_태그도_찾는다():
-    def get(url, **kw):
-        if "companyfacts" in url:
-            return FakeResponse(200, _facts(9, "ifrs-full", "BasicEarningsLossPerShare"))
-        return FakeResponse(404)
-
-    facts, status = F.fetch_facts("0000000002", type("S", (), {"get": staticmethod(get)}))
+    payload = _facts(("ifrs-full", "BasicEarningsLossPerShare", 9))
+    facts, status = F.fetch_facts("0000000002", _fake(payload))
     assert status == "ok" and len(facts) == 9
 
 
@@ -365,3 +408,65 @@ def test_같은_키가_겹치면_새_값이_이긴다(tmp_path):
     F.write_eps(p, 새, {"AAA"}, KEYS)
     d = pd.read_parquet(p)
     assert len(d[(d.ticker == "AAA") & (d.account == "eps")]) == 1
+
+
+# --- 뒤처짐 가드: SEC 태깅이 끊긴 종목을 옛 값으로 덮지 않는다 ---
+
+def _행(*years):
+    return [{"ticker": "AAA", "year": y, "account": "eps", "amount": 1.0}
+            for y in years]
+
+
+def test_계열이_여러_해_뒤처지면_건너뛴다():
+    # Ares 실측: SEC에는 2019년까지만 있고 기존에는 2025년까지 있다.
+    # 덮으면 최신 연도가 사라져 A항목이 판정 불가가 된다.
+    assert F.too_stale(_행(2014, 2019), 2025) is True
+
+
+def test_한_해_차이는_제출_시기다():
+    # National Grid는 3월 결산이라 기존이 한 해 앞설 수 있다. 정상이다.
+    assert F.too_stale(_행(2016, 2025), 2026) is False
+
+
+def test_새_계열이_더_최신이면_건너뛰지_않는다():
+    assert F.too_stale(_행(2007, 2025), 2025) is False
+
+
+def test_기존_값이_없으면_가드를_안_건다():
+    assert F.too_stale(_행(2019), None) is False
+
+
+def test_새_행이_없으면_가드를_안_건다():
+    assert F.too_stale([], 2025) is False
+
+
+def test_최신_연도는_eps만_본다(tmp_path):
+    # net_income은 eps보다 최신일 수 있다. 그걸 기준으로 삼으면 멀쩡한
+    # SEC 계열이 뒤처졌다고 잘못 판정된다.
+    df = pd.DataFrame([
+        {"ticker": "AAA", "year": 2021, "account": "eps", "amount": 1.0},
+        {"ticker": "AAA", "year": 2025, "account": "net_income", "amount": 5.0},
+        {"ticker": "BBB", "year": 2025, "account": "eps", "amount": 2.0},
+    ])
+    assert F.last_eps_year(df, "AAA") == 2021
+    assert F.last_eps_year(df, "CCC") is None
+    assert F.last_eps_year(None, "AAA") is None
+
+
+def test_연간만_받은_종목의_분기는_안_지운다(tmp_path):
+    # 2026-08-24: 캐나다·아일랜드 발행사는 40-F/20-F로 연간만 내고 중간은
+    # 6-K다. 한 집합으로 지우다가 AEM·AER·AGI 등 508종목이 분기를 잃었다.
+    q = tmp_path / "quarterly.parquet"
+    a = tmp_path / "annual.parquet"
+    qkeys = ["ticker", "year", "quarter", "account"]
+    pd.DataFrame([{"ticker": "AEM", "year": 2025, "quarter": "1Q",
+                   "account": "eps", "amount": 0.5}]).to_parquet(q, index=False)
+    _기존(a, ["AEM"])
+
+    done_a, done_q = {"AEM"}, set()     # 연간만 받았다
+    F.write_eps(q, [], done_q, qkeys)
+    F.write_eps(a, [{"ticker": "AEM", "year": 2025, "account": "eps",
+                     "amount": 4.0}], done_a, KEYS)
+
+    assert _eps(a)["AEM"] == 4.0        # 연간은 갈아 끼운다
+    assert _eps(q)["AEM"] == 0.5        # 분기는 그대로 둔다

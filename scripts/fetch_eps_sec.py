@@ -4,12 +4,15 @@
 # 만드는데 그 주식수가 틀릴 때가 있다(BKNG 2023: 야후 4.7468 대 공시 118.67, 25배).
 # 공시값을 직접 받아 그 자리를 대신한다.
 #
-# 다루는 함정 둘.
+# 다루는 함정 넷.
 #   1) 액면분할 — 10-K는 비교연도 2개만 다시 싣는다. 최신 제출본을 써도 그보다 오래된
 #      연도는 분할 이전 기준이라 계열에 절벽이 생긴다. 제출본 간 값의 배수로 분할
 #      비율을 잡아내 직접 조정한다.
 #   2) 자릿수 오태깅 — 드물게 회사가 자릿수를 틀리게 태깅한다(ULBI 0.38을 38로).
 #      net_income으로 주식수를 역산해 계열에서 튀는 연도를 버린다.
+#   3) 태그 고르기 — 회사마다 쓰는 태그가 다르고, 한 회사도 시기별로 태그를
+#      바꾼다. 후보를 다 받아 합치고 겹칠 때만 우선순위로 가른다(collect_facts).
+#   4) 통화 — 해외 발행사는 EUR/BRL/MXN per share로 낸다. 그대로 받는다(pick_unit).
 #
 # 사용법:
 #     python scripts/fetch_eps_sec.py            # 전 종목
@@ -17,6 +20,7 @@
 import argparse
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -27,19 +31,33 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 DATA = Path("data")
-SEC_BASE = "https://data.sec.gov/api/xbrl/companyconcept"
 
 # SEC는 연락처가 든 User-Agent를 요구한다. 없으면 403이다.
 UA = "canslim-screener (contact: vkdlzlz11@gmail.com)"
 HEADERS = {"User-Agent": UA, "Accept-Encoding": "gzip, deflate"}
 
-# 우선순위대로 폴백한다. 하나라도 값이 나오면 거기서 멈춘다.
-# IncomeLossFromContinuingOperationsPerBasicShare가 필요하다 — Airbnb는 이것만
-# 쓰고 EarningsPerShareBasic은 404다. 오닐도 계속사업 기준을 보므로 성격도 맞다.
+# 후보 태그. 전부 받아서 합치고, 같은 기간이 겹칠 때만 이 순위로 가른다.
+# 첫 번째로 값이 나오는 태그에서 멈추면 계열이 잘린다.
+#   agilon health: EarningsPerShareBasic이 10-Q 6건뿐이고 진짜 계열은
+#   IncomeLossFromContinuingOperationsPerBasicShare 56건에 있다.
+# 두꺼운 태그 하나만 골라도 잘린다.
+#   Ares: 유닛당 태그 114건이 2014~2019, 주당 태그가 2019~2025를 덮는다.
 TAGS = [("us-gaap", "EarningsPerShareBasic"),
         ("us-gaap", "EarningsPerShareBasicAndDiluted"),
         ("us-gaap", "IncomeLossFromContinuingOperationsPerBasicShare"),
-        ("ifrs-full", "BasicEarningsLossPerShare")]
+        ("us-gaap", "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare"),
+        ("ifrs-full", "BasicEarningsLossPerShare"),
+        ("ifrs-full", "BasicAndDilutedEarningsLossPerShare"),
+        ("ifrs-full", "BasicEarningsLossPerShareFromContinuingOperations"),
+        # 합자회사는 주당이 아니라 유닛당으로 낸다(AB·ARES·ARLP·MMLP).
+        ("us-gaap", "NetIncomeLossPerOutstandingLimitedPartnershipUnitBasicNetOfTax"),
+        ("us-gaap", "IncomeLossFromContinuingOperationsPerOutstanding"
+                    "LimitedPartnershipUnitBasicNetOfTax"),
+        ("us-gaap", "NetIncomeLossPerOutstandingLimitedPartnershipAnd"
+                    "GeneralPartnershipUnitBasicAndDiluted"),
+        # 기본이 아예 없는 회사가 있다. 희석이라도 없는 것보다 낫다.
+        ("us-gaap", "EarningsPerShareDiluted"),
+        ("ifrs-full", "DilutedEarningsLossPerShare")]
 UNIT_KEY = "USD/shares"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
@@ -57,7 +75,15 @@ SPLIT_DENOMS = (1, 2, 4)
 SHARE_OUTLIER_MULT = 10.0
 SHARE_GUARD_MIN_YEARS = 4  # 연도가 적으면 중앙값 자체를 못 믿는다
 
+# SEC 계열의 최신 연도가 기존보다 이만큼 뒤처지면 갈아 끼우지 않는다.
+# 한 해 차이는 제출 시기 문제라 정상이다. 여러 해가 비면 태깅이 끊긴 것이고
+# (Ares는 2018년 법인 전환 뒤로 없다), 그걸로 덮으면 최신 연도가 사라져
+# A항목이 판정 불가가 된다. 틀릴 수 있는 값이 못 쓰는 값보다 낫다.
+STALE_YEARS = 2
+
 SEC_SLEEP = 0.11           # SEC 권고 초당 10건
+FACTS_WORKERS = 5          # 워커당 SEC_SLEEP*6이면 합쳐서 초당 8건 안쪽이다
+FACTS_SLEEP = SEC_SLEEP * 6
 
 # 야후 분할 이력. 6워커로 5,919종목을 86초에 긁었다가 4,365종목이 차단당했다
 # (2026-08-24). 워커를 줄이고 간격을 두고 재시도한다.
@@ -89,6 +115,43 @@ def load_cik_map():
     return {str(v["ticker"]).upper(): f"{int(v['cik_str']):010d}" for v in src}
 
 
+def pick_unit(units):
+    """한 태그의 단위 중 쓸 것을 고른다. USD/shares가 있으면 그것, 없으면 최다.
+
+    해외 발행사는 자국 통화로 낸다 — ASML은 EUR/shares, Ambev는 BRL/shares,
+    América Móvil은 MXN/shares다. USD만 받으면 이들이 통째로 "미공시"가 되어
+    기존 값까지 지워진다. 판정에 쓰는 것은 증가율이라 통화에 무관하고, 한
+    종목 안에서는 단위가 일관되므로 그대로 쓴다.
+    """
+    if UNIT_KEY in units:
+        return units[UNIT_KEY]
+    per_share = [(len(v), k) for k, v in units.items() if k.endswith("/shares")]
+    return units[max(per_share)[1]] if per_share else []
+
+
+def collect_facts(facts):
+    """모든 후보 태그의 사실을 합친다. (사실 목록, 태그를 하나라도 봤는가).
+
+    태그 하나만 골라선 안 된다. 시기별로 태그가 갈리는 회사가 있다 — Ares는
+    2018년에 합자회사에서 법인으로 바꿔서 유닛당 태그가 2014~2019, 주당 태그가
+    2019~2025를 덮는다. 둘 중 두꺼운 쪽만 쓰면 나머지 기간이 통째로 사라진다.
+
+    각 사실에 태그 순위를 붙여 둔다. 같은 기간을 여러 태그가 덮으면 by_period가
+    순위가 앞선 쪽을 쓴다.
+
+    "태그를 봤는가"를 따로 돌려준다. 태그는 있는데 쓸 만한 사실이 없는 경우
+    (전부 8-K거나 기간이 없는 경우)를 "미공시"로 뭉개면 기존 값이 지워진다.
+    """
+    merged, found = [], False
+    for rank, (taxonomy, tag) in enumerate(TAGS):
+        items = pick_unit(facts.get(taxonomy, {}).get(tag, {}).get("units", {}))
+        if not items:
+            continue
+        found = True
+        merged += [{**f, "_rank": rank} for f in items if usable(f)]
+    return merged, found
+
+
 def fetch_facts(cik, session=None):
     """(사실 목록, 상태). 상태는 "ok" | "none" | "fail".
 
@@ -96,62 +159,41 @@ def fetch_facts(cik, session=None):
     값을 지운다. 조회 실패("fail")와 섞으면 네트워크 문제로 멀쩡한 데이터가
     지워진다.
 
-    companyconcept가 비면 companyfacts로 한 번 더 확인한다. 두 창구가 서로
-    다른 답을 준다 — Abbott은 companyfacts에 EarningsPerShareBasic이 313건
-    있는데 companyconcept는 HTTP 200에 0건을 돌려준다. 여기서 물러서면 멀쩡한
-    대형주의 EPS가 통째로 지워진다(2026-08-24에 ABT·ACHC가 그렇게 날아갔다).
+    companyfacts만 쓴다. companyconcept는 같은 태그를 두고 다른 답을 준다 —
+    Abbott은 companyfacts에 EarningsPerShareBasic이 313건인데 companyconcept는
+    HTTP 200에 0건을 돌려줬고, 그 때문에 2026-08-24에 ABT·ACHC의 EPS가 통째로
+    지워졌다. 태그별로 따로 물어야 해서 어느 태그가 제일 두꺼운지 비교할 수도
+    없다. 한 번에 다 받아 비교한다.
     """
     get = (session or requests).get
-    failed = False
-    for i, (taxonomy, tag) in enumerate(TAGS):
-        url = f"{SEC_BASE}/CIK{cik}/{taxonomy}/{tag}.json"
-        try:
-            r = get(url, headers=HEADERS, timeout=30)
-        except Exception:  # noqa: BLE001
-            failed = True
-            continue
-        time.sleep(SEC_SLEEP)
-        if r.status_code == 404:
-            continue                      # 이 태그를 안 쓰는 회사다
-        if r.status_code != 200:
-            failed = True
-            continue
-        facts = r.json().get("units", {}).get(UNIT_KEY, [])
-        if facts:
-            return facts, "ok"
-        if i == 0:
-            # 주 태그가 HTTP 200에 0건이다. 안 쓰는 회사면 404가 온다. 200에
-            # 0건은 companyconcept가 가진 것을 다 안 보여주는 경우다 —
-            # Abbott은 companyfacts에 313건인데 여기서는 0건이다. 이때 보조
-            # 태그로 넘어가면 빈약한 값(ACHC: 12건)이 풍부한 주 태그(254건)를
-            # 이겨 계열이 잘린다. 뒤 태그를 보지 않고 companyfacts로 간다.
-            break
-
-    return _facts_from_companyfacts(cik, get, failed)
-
-
-def _facts_from_companyfacts(cik, get, already_failed):
-    """companyfacts 전체에서 주당이익 태그를 우선순위대로 찾는다."""
     try:
         r = get(FACTS_URL.format(cik=cik), headers=HEADERS, timeout=60)
     except Exception:  # noqa: BLE001
         return [], "fail"
-    time.sleep(SEC_SLEEP)
     if r.status_code == 404:
-        return [], "none" if not already_failed else "fail"
+        return [], "none"     # SEC에 제출 이력이 없다(펀드·SPAC 다수)
     if r.status_code != 200:
         return [], "fail"
     try:
         facts = r.json().get("facts", {})
     except ValueError:
         return [], "fail"
+    items, found = collect_facts(facts)
+    return items, "ok" if found else "none"
 
-    for taxonomy, tag in TAGS:
-        items = facts.get(taxonomy, {}).get(tag, {}).get("units", {}).get(UNIT_KEY, [])
-        if items:
-            return items, "ok"
-    # 조회는 성공했는데 어느 태그에도 값이 없다. 진짜로 주당이익을 안 내는 회사다.
-    return [], "none" if not already_failed else "fail"
+
+_local = threading.local()
+
+
+def fetch_facts_threaded(cik):
+    """워커에서 부르는 fetch_facts. 세션은 스레드마다 따로 둔다."""
+    session = getattr(_local, "session", None)
+    if session is None:
+        session = _local.session = requests.Session()
+    try:
+        return fetch_facts(cik, session)
+    finally:
+        time.sleep(FACTS_SLEEP)
 
 
 def usable(fact):
@@ -176,14 +218,20 @@ def label(end):
 
 
 def by_period(facts):
-    """{(start, end): [사실, ...]} — 제출일 오름차순."""
+    """{(start, end): [사실, ...]} — 제출일 오름차순.
+
+    한 기간을 여러 태그가 덮으면 순위가 앞선 태그만 남긴다. 계속사업 기준과
+    총액 기준을 같은 기간에 섞으면 그 해만 성격이 달라진다.
+    """
     out = {}
     for f in facts:
         if not usable(f) or not period_kind(f["start"], f["end"]):
             continue
         out.setdefault((f["start"], f["end"]), []).append(f)
-    for k in out:
-        out[k].sort(key=lambda f: str(f.get("filed", "")))
+    for group in out.values():
+        best = min(f.get("_rank", 0) for f in group)
+        group[:] = sorted((f for f in group if f.get("_rank", 0) == best),
+                          key=lambda f: str(f.get("filed", "")))
     return out
 
 
@@ -294,6 +342,21 @@ def drop_scale_outliers(a_rows, net_income):
     return [r for r in a_rows if r["year"] not in bad], sorted(bad)
 
 
+def last_eps_year(df, ticker):
+    """기존 파일에 든 이 종목 eps의 최신 연도. 없으면 None."""
+    if df is None or df.empty:
+        return None
+    d = df[(df["ticker"] == ticker) & (df["account"] == "eps")]
+    return int(d["year"].max()) if len(d) else None
+
+
+def too_stale(rows, last_year):
+    """새 계열이 기존보다 STALE_YEARS 이상 뒤처지는가."""
+    if not rows or last_year is None:
+        return False
+    return max(r["year"] for r in rows) <= last_year - STALE_YEARS
+
+
 def net_income_by_year(annual_df, ticker):
     if annual_df is None or annual_df.empty:
         return {}
@@ -308,9 +371,14 @@ def write_eps(path, new_rows, processed, keys):
     야후 차단으로 실제로 그렇게 4,325종목의 EPS가 사라졌다. 처리하지 못한
     종목은 손대지 않는다 — 오래된 값이라도 없는 것보다 낫다.
 
-    `processed`는 SEC 응답까지 받아본 종목이다. 주당이익 태그가 아예 없는
-    종목도 여기 들어가고, 그 종목의 기존 eps는 지워진다. 야후가 만든 계산값을
-    남겨두면 그것이 그대로 판정에 쓰이기 때문이다(폴백을 두지 않기로 한 결정).
+    `processed`는 이 파일에 대해 SEC가 답을 준 종목이다. 주당이익을 아예 안
+    내는 회사도 여기 들어가고, 그 종목의 기존 eps는 지워진다. 야후가 만든
+    계산값을 남겨두면 그것이 그대로 판정에 쓰이기 때문이다.
+
+    연간과 분기는 서로 다른 집합을 받는다. 캐나다·아일랜드 발행사는 40-F/20-F로
+    연간만 내고 중간보고는 6-K라 SEC에 분기 주당이익이 없다. 한 집합으로 묶으면
+    연간이 나왔다는 이유로 분기까지 지워진다(2026-08-24에 AEM·AER·AGI 등
+    508종목이 그렇게 분기를 잃었다).
     """
     existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
     if len(existing):
@@ -344,7 +412,9 @@ def main():
     cik_map = load_cik_map()
 
     path_a = DATA / "financials/annual.parquet"
+    path_q = DATA / "financials/quarterly.parquet"
     existing_annual = pd.read_parquet(path_a) if path_a.exists() else None
+    existing_quarterly = pd.read_parquet(path_q) if path_q.exists() else None
 
     print(f"SEC 주당이익 수집: {len(tickers)}종목", flush=True)
 
@@ -373,32 +443,48 @@ def main():
     split_fail = sum(1 for v in splits_by_ticker.values() if v is None)
     print(f"  분할 이력 완료 (최종 실패 {split_fail}종목)", flush=True)
 
-    session = requests.Session()
+    # SEC 사실도 병렬로 받는다. companyfacts는 응답이 중앙값 3.4MB라 직렬이면
+    # 5,919종목에 70분이 넘는다. 초당 8건 안쪽을 지키며 5줄로 나눠 받는다.
+    print("  SEC 사실 수집 중...", flush=True)
+    facts_by_ticker = {}
+    targets = [tk for tk in tickers if cik_map.get(tk.upper())]
+    no_cik = len(tickers) - len(targets)
+    with ThreadPoolExecutor(max_workers=FACTS_WORKERS) as pool:
+        futures = {pool.submit(fetch_facts_threaded, cik_map[tk.upper()]): tk
+                   for tk in targets}
+        for n, fut in enumerate(as_completed(futures), 1):
+            tk = futures[fut]
+            try:
+                facts_by_ticker[tk] = fut.result()
+            except Exception as e:  # noqa: BLE001
+                facts_by_ticker[tk] = ([], f"fail:{type(e).__name__}: {e}")
+            if n % 1000 == 0:
+                print(f"    {n}/{len(targets)}", flush=True)
+
     q_all, a_all = [], []
-    ok = no_cik = no_tag = no_splits = dropped = fetch_fail = no_rows = 0
-    errors, dropped_detail, processed = [], [], set()
-    for i, tk in enumerate(tickers, 1):
+    ok = no_tag = no_splits = dropped = fetch_fail = no_rows = 0
+    errors, dropped_detail, stale_a, stale_q = [], [], [], []
+    # 연간과 분기를 따로 센다. SEC가 연간만 주는 종목의 분기까지 지우면 안 된다.
+    done_a, done_q = set(), set()
+    for i, tk in enumerate(targets, 1):
         # 종목 하나의 예외로 전체가 죽으면 여기까지 받은 수천 종목이 통째로
         # 버려진다(저장은 루프가 끝난 뒤에 한다). 티커와 예외는 반드시 남긴다.
         try:
-            cik = cik_map.get(tk.upper())
-            if not cik:
-                no_cik += 1
-                continue
             splits = splits_by_ticker.get(tk)
             if splits is None:
                 # 분할 이력을 모르면 조정할 수 없다. 조정 없이 저장하느니 비워둔다.
                 no_splits += 1
                 continue
-            facts, status = fetch_facts(cik, session)
-            if status == "fail":
+            facts, status = facts_by_ticker.get(tk, ([], "fail"))
+            if status.startswith("fail"):
                 fetch_fail += 1
                 continue                  # 손대지 않는다. 기존 값이 남는다
             if status == "none":
                 # 주당이익을 아예 공시하지 않는 회사다(펀드·SPAC 다수). 기존
                 # 야후 값을 지운다 — 남겨두면 그 계산값이 그대로 판정에 쓰인다.
                 no_tag += 1
-                processed.add(tk)
+                done_a.add(tk)
+                done_q.add(tk)
                 continue
 
             q_rows, a_rows = build_rows(tk, facts, splits)
@@ -407,19 +493,28 @@ def main():
             if bad:
                 dropped += len(bad)
                 dropped_detail.append((tk, bad))
+            if too_stale(a_rows, last_eps_year(existing_annual, tk)):
+                stale_a.append(tk)
+                a_rows = []
+            if too_stale(q_rows, last_eps_year(existing_quarterly, tk)):
+                stale_q.append(tk)
+                q_rows = []
             if not q_rows and not a_rows:
                 # 사실은 받았는데 쓸 행이 안 나왔다. 회사가 안 낸 것이 아니라
                 # 우리 추출이 못 건진 것이므로 기존 값을 지우면 안 된다.
                 no_rows += 1
                 continue
             ok += 1
-            processed.add(tk)
-            q_all += q_rows
-            a_all += a_rows
+            if a_rows:
+                done_a.add(tk)
+                a_all += a_rows
+            if q_rows:
+                done_q.add(tk)
+                q_all += q_rows
         except Exception as e:  # noqa: BLE001
             errors.append((tk, f"{type(e).__name__}: {e}"))
         if i % 500 == 0:
-            print(f"  {i}/{len(tickers)} 처리 (수집 {ok}종목)", flush=True)
+            print(f"  {i}/{len(targets)} 처리 (수집 {ok}종목)", flush=True)
 
     if errors:
         print(f"경고: {len(errors)}종목에서 예외가 발생해 제외됨.", flush=True)
@@ -430,15 +525,14 @@ def main():
           f"SEC 조회 실패 {fetch_fail} / 주당이익 미공시 {no_tag} / "
           f"사실은 있으나 행 없음 {no_rows} / 자릿수 폐기 {dropped}건 "
           f"({len(dropped_detail)}종목)", flush=True)
+    print(f"  갱신 대상: 연간 {len(done_a)}종목 / 분기 {len(done_q)}종목", flush=True)
+    print(f"  기존보다 뒤처져 건너뜀: 연간 {len(stale_a)}종목 {sorted(stale_a)[:20]} / "
+          f"분기 {len(stale_q)}종목 {sorted(stale_q)[:20]}", flush=True)
     for tk, bad in dropped_detail[:40]:
         print(f"  폐기 {tk}: {bad}", flush=True)
 
-    print(f"eps를 갈아 끼울 종목 {len(processed)}종목 / "
-          f"손대지 않을 종목 {len(tickers) - len(processed)}종목", flush=True)
-
-    path_q = DATA / "financials/quarterly.parquet"
-    write_eps(path_q, q_all, processed, ["ticker", "year", "quarter", "account"])
-    write_eps(path_a, a_all, processed, ["ticker", "year", "account"])
+    write_eps(path_q, q_all, done_q, ["ticker", "year", "quarter", "account"])
+    write_eps(path_a, a_all, done_a, ["ticker", "year", "account"])
 
 
 if __name__ == "__main__":
