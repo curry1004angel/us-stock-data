@@ -314,9 +314,32 @@ def test_제출_이력이_없으면_주당이익_미공시다():
     assert status == "none" and facts == []
 
 
-def test_사실은_받았는데_EPS_태그가_없으면_미공시다():
+def test_손익도_주당이익도_없으면_미공시다():
+    # 폐쇄형 펀드는 10-K 손익 자체가 없다. 이때만 기존 값을 지운다.
     payload = {"facts": {"us-gaap": {"Assets": {"units": {"USD": [{"val": 1}]}}}}}
     facts, status = F.fetch_facts("0000000005", _fake(payload))
+    assert status == "none" and facts == []
+
+
+def test_다중_클래스_회사를_미공시로_보지_않는다():
+    # Constellation Brands 실측: 주당이익 사실에 ClassOfStockAxis가 붙어 있어
+    # companyfacts에 안 보인다. us-gaap 태그는 657개고 NetIncomeLoss도 있다.
+    # 미공시로 뭉개면 기존 EPS가 지워진다.
+    payload = {"facts": {"us-gaap": {
+        "PreferredStockParOrStatedValuePerShare": {"units": {"USD/shares": [
+            {"val": 0.01, "end": "2025-02-28", "form": "10-K"}]}},
+        "NetIncomeLoss": {"units": {"USD": [
+            {"start": "2024-03-01", "end": "2025-02-28", "val": 8.0,
+             "filed": "2025-04-20", "form": "10-K"}]}}}}}
+    facts, status = F.fetch_facts("0000016918", _fake(payload))
+    assert status == "ok" and facts == []      # 손대지 않고 넘어간다
+
+
+def test_손익이_정기보고서가_아니면_사업회사로_안_본다():
+    payload = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 8.0,
+         "filed": "2025-02-01", "form": "N-CSR"}]}}}}}
+    facts, status = F.fetch_facts("0000000007", _fake(payload))
     assert status == "none" and facts == []
 
 

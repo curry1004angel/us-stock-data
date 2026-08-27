@@ -61,6 +61,13 @@ TAGS = [("us-gaap", "EarningsPerShareBasic"),
 UNIT_KEY = "USD/shares"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
+# 주당이익이 안 보일 때 "회사가 안 낸 것"인지 "이 창구로 안 보이는 것"인지 가른다.
+# 기간이 있는 손익 태그라 10-K/10-Q를 내는 사업회사에만 있다.
+OPERATING_TAGS = [("us-gaap", "NetIncomeLoss"),
+                  ("us-gaap", "Revenues"),
+                  ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+                  ("ifrs-full", "ProfitLoss")]
+
 FORMS = ("10-K", "10-Q", "20-F", "40-F")
 ANNUAL_DAYS = (330, 400)
 QUARTER_DAYS = (75, 105)
@@ -154,6 +161,26 @@ def collect_facts(facts):
     return merged, found
 
 
+def files_operating_reports(facts):
+    """주당이익은 안 보이지만 10-K/10-Q 손익을 내는 회사인가.
+
+    다중 클래스 회사는 주당이익 사실에 ClassOfStockAxis가 붙는데,
+    companyfacts와 companyconcept는 차원 없는 사실만 보여준다. 그래서
+    Constellation Brands·Planet Fitness·Bel Fuse는 EarningsPerShareBasic이
+    404다. 응답 자체는 온전하다 — STZ는 us-gaap 태그가 657개고 NetIncomeLoss도
+    있다. 주당이익만 안 보인다.
+
+    회사가 안 낸 것이 아니라 이 창구로 안 보이는 것이므로 기존 값을 지우면
+    안 된다. 폐쇄형 펀드·SPAC은 여기서 걸러진다 — 10-K 손익 자체가 없다.
+    """
+    for taxonomy, tag in OPERATING_TAGS:
+        units = facts.get(taxonomy, {}).get(tag, {}).get("units", {})
+        for items in units.values():
+            if any(usable(f) for f in items):
+                return True
+    return False
+
+
 def fetch_facts(cik, session=None):
     """(사실 목록, 상태). 상태는 "ok" | "none" | "fail".
 
@@ -181,7 +208,9 @@ def fetch_facts(cik, session=None):
     except ValueError:
         return [], "fail"
     items, found = collect_facts(facts)
-    return items, "ok" if found else "none"
+    if items or found or files_operating_reports(facts):
+        return items, "ok"
+    return [], "none"
 
 
 _local = threading.local()
