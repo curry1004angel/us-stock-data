@@ -182,11 +182,17 @@ def files_operating_reports(facts):
 
 
 def fetch_facts(cik, session=None):
-    """(사실 목록, 상태). 상태는 "ok" | "none" | "fail".
+    """(사실 목록, 상태). 상태는 "ok" | "none" | "no_filings" | "fail".
 
-    "none"은 이 회사가 주당이익을 아예 공시하지 않는다는 뜻이고, 그때만 기존
-    값을 지운다. 조회 실패("fail")와 섞으면 네트워크 문제로 멀쩡한 데이터가
-    지워진다.
+    "none"만 기존 값을 지운다. 이 회사가 정기보고서 손익은 내면서 주당이익은
+    안 낸다는 뜻이다. 폐쇄형 펀드가 여기 해당한다.
+
+    "no_filings"는 SEC에 XBRL 자료 자체가 없는 경우다(HTTP 404). 지우지
+    않는다. 회사가 안 낸 것이 아니라 이 창구에 없는 것이다 — Preferred Bank는
+    캘리포니아 주법 은행이라 10-K를 SEC가 아니라 FDIC에 내고, Aya Gold &
+    Silver는 캐나다 상장사다. 둘 다 멀쩡한 사업회사다.
+
+    조회 실패("fail")와 섞으면 네트워크 문제로 멀쩡한 데이터가 지워진다.
 
     companyfacts만 쓴다. companyconcept는 같은 태그를 두고 다른 답을 준다 —
     Abbott은 companyfacts에 EarningsPerShareBasic이 313건인데 companyconcept는
@@ -200,7 +206,7 @@ def fetch_facts(cik, session=None):
     except Exception:  # noqa: BLE001
         return [], "fail"
     if r.status_code == 404:
-        return [], "none"     # SEC에 제출 이력이 없다(펀드·SPAC 다수)
+        return [], "no_filings"
     if r.status_code != 200:
         return [], "fail"
     try:
@@ -526,7 +532,7 @@ def main():
                 print(f"    {n}/{len(targets)}", flush=True)
 
     q_all, a_all = [], []
-    ok = no_tag = no_splits = dropped = fetch_fail = no_rows = 0
+    ok = no_tag = no_splits = dropped = fetch_fail = no_rows = no_filings = 0
     errors, dropped_detail, stale_a, stale_q = [], [], [], []
     # 연간과 분기를 따로 센다. SEC가 연간만 주는 종목의 분기까지 지우면 안 된다.
     done_a, done_q = set(), set()
@@ -543,6 +549,11 @@ def main():
             if status.startswith("fail"):
                 fetch_fail += 1
                 continue                  # 손대지 않는다. 기존 값이 남는다
+            if status == "no_filings":
+                # SEC에 XBRL 자료가 없다. 없다는 증거가 아니라 증거가 없는
+                # 것이므로 지우지 않는다.
+                no_filings += 1
+                continue
             if status == "none":
                 # 주당이익을 아예 공시하지 않는 회사다(펀드·SPAC 다수). 기존
                 # 야후 값을 지운다 — 남겨두면 그 계산값이 그대로 판정에 쓰인다.
@@ -586,9 +597,9 @@ def main():
             print(f"  {tk}: {msg}", flush=True)
 
     print(f"수집 완료: {ok}종목 / CIK 없음 {no_cik} / 분할이력 실패 {no_splits} / "
-          f"SEC 조회 실패 {fetch_fail} / 주당이익 미공시 {no_tag} / "
-          f"사실은 있으나 행 없음 {no_rows} / 자릿수 폐기 {dropped}건 "
-          f"({len(dropped_detail)}종목)", flush=True)
+          f"SEC 조회 실패 {fetch_fail} / SEC에 자료 없음 {no_filings} / "
+          f"주당이익 미공시 {no_tag} / 사실은 있으나 행 없음 {no_rows} / "
+          f"자릿수 폐기 {dropped}건 ({len(dropped_detail)}종목)", flush=True)
     print(f"  갱신 대상: 연간 {len(done_a)}종목 / 분기 {len(done_q)}종목", flush=True)
     print(f"  기존보다 뒤처져 건너뜀: 연간 {len(stale_a)}종목 {sorted(stale_a)[:20]} / "
           f"분기 {len(stale_q)}종목 {sorted(stale_q)[:20]}", flush=True)

@@ -308,10 +308,11 @@ def test_태그는_있는데_쓸_사실이_없으면_미공시가_아니다():
     assert status == "ok" and facts == []
 
 
-def test_제출_이력이_없으면_주당이익_미공시다():
-    # 이때만 기존 값을 지운다. 폐쇄형 펀드·SPAC이 여기 해당한다.
-    facts, status = F.fetch_facts("0000000001", _fake(None, status=404))
-    assert status == "none" and facts == []
+def test_SEC에_자료가_없으면_미공시로_보지_않는다():
+    # Preferred Bank는 캘리포니아 주법 은행이라 10-K를 FDIC에 낸다.
+    # Aya Gold & Silver는 캐나다 상장사다. 404는 없다는 증거가 아니다.
+    facts, status = F.fetch_facts("0001492165", _fake(None, status=404))
+    assert status == "no_filings" and facts == []
 
 
 def test_손익도_주당이익도_없으면_미공시다():
