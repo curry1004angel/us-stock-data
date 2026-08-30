@@ -515,6 +515,47 @@ def test_분기_파일에서는_분기까지_본다():
     assert F.last_eps_period(df, "AAA") == (2026, 2)
 
 
+def test_새_계열보다_최신인_기존_행은_남긴다(tmp_path):
+    # 중남미 발행사 실측: SEC가 한 해 뒤처진다. 통째로 갈아 끼우면 최신 연도가
+    # 사라져 A항목이 낡은 값으로 판정된다.
+    p = tmp_path / "annual.parquet"
+    pd.DataFrame([
+        {"ticker": "AMX", "year": 2024, "account": "eps", "amount": 1.0},
+        {"ticker": "AMX", "year": 2025, "account": "eps", "amount": 2.0},
+    ]).to_parquet(p, index=False)
+    새 = [{"ticker": "AMX", "year": 2023, "account": "eps", "amount": 8.0},
+          {"ticker": "AMX", "year": 2024, "account": "eps", "amount": 9.0}]
+    F.write_eps(p, 새, {"AMX"}, KEYS)
+
+    got = dict(zip(pd.read_parquet(p)["year"], pd.read_parquet(p)["amount"]))
+    assert got == {2023: 8.0, 2024: 9.0, 2025: 2.0}
+
+
+def test_분기도_최신_기존_행을_남긴다(tmp_path):
+    p = tmp_path / "quarterly.parquet"
+    qkeys = ["ticker", "year", "quarter", "account"]
+    pd.DataFrame([
+        {"ticker": "AAA", "year": 2026, "quarter": "1Q", "account": "eps",
+         "amount": 1.0},
+        {"ticker": "AAA", "year": 2026, "quarter": "2Q", "account": "eps",
+         "amount": 2.0},
+    ]).to_parquet(p, index=False)
+    새 = [{"ticker": "AAA", "year": 2026, "quarter": "1Q", "account": "eps",
+           "amount": 9.0}]
+    F.write_eps(p, 새, {"AAA"}, qkeys)
+
+    d = pd.read_parquet(p)
+    assert dict(zip(d["quarter"], d["amount"])) == {"1Q": 9.0, "2Q": 2.0}
+
+
+def test_새_행이_없는_종목은_전부_지운다(tmp_path):
+    # 주당이익을 아예 안 내는 회사다. 남길 경계가 없으므로 통째로 지운다.
+    p = tmp_path / "annual.parquet"
+    _기존(p, ["AAA", "BBB"])
+    F.write_eps(p, [], {"BBB"}, KEYS)
+    assert "BBB" not in _eps(p)
+
+
 def test_연간만_받은_종목의_분기는_안_지운다(tmp_path):
     # 2026-08-24: 캐나다·아일랜드 발행사는 40-F/20-F로 연간만 내고 중간은
     # 6-K다. 한 집합으로 지우다가 AEM·AER·AGI 등 508종목이 분기를 잃었다.

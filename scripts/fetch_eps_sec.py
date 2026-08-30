@@ -434,6 +434,26 @@ def net_income_by_year(annual_df, ticker):
     return dict(zip(d["year"], d["amount"]))
 
 
+def _newer_than_new(existing, new_rows):
+    """기존 행별로, 그 종목의 새 계열 최신 기간보다 뒤인가. Boolean Series.
+
+    새 행이 없는 종목은 전부 False다 — 지울 대상 자체가 아니다.
+    """
+    top = {}
+    for r in new_rows:
+        p = (r["year"], QUARTER_ORDER.get(r.get("quarter"), 0))
+        if p > top.get(r["ticker"], (0, 0)):
+            top[r["ticker"]] = p
+    if not top:
+        return pd.Series(False, index=existing.index)
+    q = (existing["quarter"].map(QUARTER_ORDER).fillna(0).astype(int)
+         if "quarter" in existing.columns else 0)
+    pairs = list(zip(existing["ticker"], existing["year"].astype(int),
+                     q if hasattr(q, "__iter__") else [0] * len(existing)))
+    return pd.Series([(y, qq) > top.get(t, (9999, 9)) for t, y, qq in pairs],
+                     index=existing.index)
+
+
 def write_eps(path, new_rows, processed, keys):
     """처리한 종목의 eps만 새 값으로 갈아 끼운다.
 
@@ -449,10 +469,15 @@ def write_eps(path, new_rows, processed, keys):
     연간만 내고 중간보고는 6-K라 SEC에 분기 주당이익이 없다. 한 집합으로 묶으면
     연간이 나왔다는 이유로 분기까지 지워진다(2026-08-24에 AEM·AER·AGI 등
     508종목이 그렇게 분기를 잃었다).
+
+    새 계열보다 최신인 기존 행은 지우지 않는다. SEC가 한 해 뒤처진 종목이
+    적지 않고(중남미 발행사 다수), 통째로 갈아 끼우면 최신 연도가 사라진다.
+    뒤처짐 가드는 계열 전체를 버릴지만 정하고, 경계 위쪽은 여기서 지킨다.
     """
     existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
     if len(existing):
         stale = (existing["account"] == "eps") & existing["ticker"].isin(processed)
+        stale &= ~_newer_than_new(existing, new_rows)
         kept = existing[~stale]
         replaced = int(stale.sum())
     else:
