@@ -1,4 +1,4 @@
 ﻿asof,index_code,close,change_pct,above_ma50,above_ma200,ma200_rising,distribution_days,stall_days,signal,advice,top20_avg_change
-20260904,US500,7747.7099609375,1.06,True,True,True,3,0건,주의,신규 진입 축소,2.21
-20260904,IXIC,26584.060546875,1.4,True,True,True,4,0건,주의,신규 진입 축소,2.21
-20260904,DJI,53686.109375,1.18,True,True,True,2,0건,주의,신규 진입 축소,2.21
+20260905,US500,7718.60009765625,-0.38,True,True,True,3,0건,주의,신규 진입 축소,-0.14
+20260905,IXIC,26506.990234375,-0.29,True,True,True,4,0건,주의,신규 진입 축소,-0.14
+20260905,DJI,53414.25,-0.51,True,True,True,2,0건,주의,신규 진입 축소,-0.14
