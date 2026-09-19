@@ -1,4 +1,4 @@
 ﻿asof,index_code,close,change_pct,above_ma50,above_ma200,ma200_rising,distribution_days,stall_days,signal,advice,top20_avg_change
-20260918,US500,7637.759765625,1.14,True,True,True,7,0건,방어,25% 이상 현금 확보,3.3
-20260918,IXIC,26418.298828125,1.69,True,True,True,6,0건,방어,25% 이상 현금 확보,3.3
-20260918,DJI,51778.0390625,0.61,False,True,True,5,0건,방어,25% 이상 현금 확보,3.3
+20260919,US500,7650.5,0.17,True,True,True,7,0건,방어,25% 이상 현금 확보,0.01
+20260919,IXIC,26522.544921875,0.39,True,True,True,6,20260918,방어,25% 이상 현금 확보,0.01
+20260919,DJI,51682.640625,-0.18,False,True,True,5,20260918,방어,25% 이상 현금 확보,0.01
