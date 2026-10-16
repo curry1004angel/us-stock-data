@@ -1,4 +1,4 @@
 ﻿asof,index_code,close,change_pct,above_ma50,above_ma200,ma200_rising,distribution_days,stall_days,signal,advice,top20_avg_change
-20261015,US500,7718.93994140625,-1.11,True,True,True,6,20260918,방어,25% 이상 현금 확보,-0.47
-20261015,IXIC,26692.869140625,-1.88,True,True,True,4,20260918,방어,25% 이상 현금 확보,-0.47
-20261015,DJI,51621.48046875,-0.09,False,True,True,6,20260918,방어,25% 이상 현금 확보,-0.47
+20261016,US500,7744.06005859375,0.33,True,True,True,7,20260918,방어,25% 이상 현금 확보,2.51
+20261016,IXIC,26713.025390625,0.08,True,True,True,4,20260918,방어,25% 이상 현금 확보,2.51
+20261016,DJI,52177.69140625,1.08,False,True,True,6,20260918,방어,25% 이상 현금 확보,2.51
